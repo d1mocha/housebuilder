@@ -1,7 +1,7 @@
 // Общие помощники e2e-сценариев (Playwright, предустановленный Chromium).
 const { chromium } = require('playwright');
 
-async function launch(url = 'http://localhost:5173/') {
+async function launch(url = process.env.HB_URL || 'http://localhost:5173/housebuilder/') {
   const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
   const ctx = await browser.newContext({ viewport: { width: 1600, height: 900 }, acceptDownloads: true });
   const page = await ctx.newPage();

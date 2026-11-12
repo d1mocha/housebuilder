@@ -16,7 +16,7 @@ npm install
 npm run dev
 ```
 
-Открыть http://localhost:5173/. При первом запуске открывается демо-квартира (2 комнаты, ≈53 м², мебель,
+Открыть http://localhost:5173/housebuilder/ (адрес с префиксом `base` для GitHub Pages). При первом запуске открывается демо-квартира (2 комнаты, ≈53 м², мебель,
 электрика, сантехника, отопление, шкаф-купе из конструктора).
 
 Проверки:
@@ -33,11 +33,19 @@ npm test
 npm run e2e
 ```
 
-- `npm run build` — проверка типов (`tsc --noEmit`) + сборка Vite в `dist/` (статический сайт, `base: './'`).
+- `npm run build` — проверка типов (`tsc --noEmit`) + сборка Vite в `dist/` (статический сайт, `base: '/housebuilder/'`).
 - `npm test` — 89 юнит-тестов Vitest (расчётная логика).
 - `npm run e2e` — 100 проверок в настоящем Chromium (Playwright); нужен запущенный `npm run dev` на порту 5173.
   Скриншоты и выгруженные файлы складываются в `e2e-out/` (в git не попадает). Playwright в `package.json`
   не добавлен: сценарии рассчитаны на среду, где он уже установлен (иначе — `npm i -D playwright`).
+
+### Деплой на GitHub Pages
+
+`.github/workflows/deploy.yml` на каждый push в `main` запускает тесты, собирает проект и публикует `dist/`
+через `actions/upload-pages-artifact` + `actions/deploy-pages`. Адрес сайта:
+`https://d1mocha.github.io/housebuilder/`. Один раз нужно включить Pages в настройках репозитория:
+Settings → Pages → Source: **GitHub Actions**. Если репозиторий переименуют, поменяйте `base` в
+`vite.config.ts`.
 
 ## 2. Что сделано по этапам
 
