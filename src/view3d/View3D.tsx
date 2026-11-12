@@ -294,14 +294,20 @@ function OrbitRig({ project, levelId }: { project: Project; levelId: string }) {
     const bb = pts.length ? bbox(pts) : { minX: 0, minY: 0, maxX: 8000, maxY: 6000 };
     const cx = ((bb.minX + bb.maxX) / 2) * MM;
     const cz = ((bb.minY + bb.maxY) / 2) * MM;
-    const size = Math.max(6, Math.max(bb.maxX - bb.minX, bb.maxY - bb.minY) * MM);
-    camera.position.set(cx + size * 0.2, size * 1.15, cz + size * 0.8);
+    const size = Math.max(5, Math.hypot(bb.maxX - bb.minX, bb.maxY - bb.minY) * MM);
+    // дистанция, при которой габарит помещается и по вертикали, и по горизонтали
+    const cam = camera as THREE.PerspectiveCamera;
+    const vfov = ((cam.fov ?? 50) * Math.PI) / 180;
+    const hfov = 2 * Math.atan(Math.tan(vfov / 2) * (cam.aspect || 1));
+    const dist = (size / 2 / Math.tan(Math.min(vfov, hfov) / 2)) * 1.05;
+    camera.position.set(cx + dist * 0.12, dist * 0.82, cz + dist * 0.56);
     camera.rotation.set(0, 0, 0);
     ctrl.current?.target.set(cx, 0.5, cz);
     ctrl.current?.update();
     invalidate();
   };
-  useEffect(frame, [project.id, levelId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const aspectKey = useThree((st) => Math.round((st.size.width / Math.max(1, st.size.height)) * 4));
+  useEffect(frame, [project.id, levelId, aspectKey]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (focus && ctrl.current) {
       ctrl.current.target.set(focus.point.x * MM, 0.8, focus.point.y * MM);

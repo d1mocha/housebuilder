@@ -60,7 +60,8 @@ export function createDemoProject(): Project {
   wall('cross', [4600, 0], [4600, 3900], 'bear');
   // перегородки
   wall('kit', [3400, 3900], [3400, 6800], 'part');
-  wall('wet', [6900, 3900], [6900, 6800], 'part');
+  wall('wet', [6900, 3900], [6900, 5700], 'part');
+  wall('wet2', [6900, 5700], [6900, 6800], 'part');
   wall('wc', [6900, 5700], [9000, 5700], 'part', 100);
 
   const op = (key: string, kind: 'door' | 'window' | 'portal', pos: number, o: Partial<ReturnType<typeof createOpening>> = {}) => {
@@ -74,7 +75,7 @@ export function createDemoProject(): Project {
   op('midC', 'door', 1000, { width: 800, swing: 'R', hinge: 'a' });
   op('kit', 'portal', 800, { width: 900, height: 2100 });
   op('wet', 'door', 800, { width: 700, swing: 'L', hinge: 'a' });
-  op('wet', 'door', 2350, { width: 700, swing: 'L', hinge: 'b' });
+  op('wet2', 'door', 550, { width: 700, swing: 'L', hinge: 'b' });
 
   syncRooms(lvl, roomDefaults());
   const setRoom = (pt: Vec2, name: string, type: RoomType, floor: string) => {

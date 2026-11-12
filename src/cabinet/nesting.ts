@@ -162,7 +162,7 @@ export function nestCutList(rows: CutRow[], cat: CabinetCatalog): MaterialNest[]
     const board = cat.boards.find((b) => b.id === r.materialId);
     const canRotate = !(board?.grain && r.grain === 'length');
     const list = byMat.get(r.materialId) ?? [];
-    for (let i = 0; i < r.qty; i++) list.push({ id: `${r.key}#${i}`, label: `${r.cutLength}×${r.cutWidth}`, l: r.cutLength, w: r.cutWidth, canRotate });
+    for (let i = 0; i < r.qty; i++) list.push({ id: `${r.key}#${i}`, label: `${String(r.cutLength).replace('.', ',')}×${String(r.cutWidth).replace('.', ',')}`, l: r.cutLength, w: r.cutWidth, canRotate });
     byMat.set(r.materialId, list);
   }
   const out: MaterialNest[] = [];

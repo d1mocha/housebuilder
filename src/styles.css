@@ -874,6 +874,11 @@ table.keys td {
   align-items: center;
   font-weight: 600;
 }
+.sheet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(430px, 1fr));
+  gap: 10px;
+}
 .sheet-card {
   border: 1px solid var(--line);
   border-radius: var(--radius);

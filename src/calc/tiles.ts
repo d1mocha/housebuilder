@@ -47,7 +47,8 @@ export function tileLayout(polygon: Vec2[], holes: Hole[], tileW: number, tileH:
   const sy = tileH + grout;
   let whole = 0;
   let cut = 0;
-  const eps = Math.min(tileW, tileH) * 0.02;
+  // контрольные точки ставим в 0,5 мм от краёв плитки: ловит подрезку даже на несколько мм
+  const eps = 0.5;
   let row = 0;
   for (let y0 = bb.minY; y0 < bb.maxY - 0.01; y0 += sy, row++) {
     const shift = pattern === 'brick' && row % 2 === 1 ? sx / 2 : 0;
