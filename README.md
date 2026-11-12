@@ -12,6 +12,9 @@ npm install
 npm run dev
 ```
 
+Локально приложение открывается по адресу http://localhost:5173/housebuilder/. Публикация — GitHub Pages
+(`.github/workflows/deploy.yml`, push в `main`): https://d1mocha.github.io/housebuilder/
+
 Подробности — в [REPORT.md](REPORT.md): что сделано, что упрощено, известные проблемы, дальнейшие шаги.
 Архитектура — [ARCHITECTURE.md](ARCHITECTURE.md), решения — [DECISIONS.md](DECISIONS.md).
 
