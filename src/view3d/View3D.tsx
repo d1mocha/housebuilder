@@ -274,6 +274,12 @@ function WalkControls({ level }: { level: Level }) {
     camera.position.set(pos.current.x * MM, (level.elevation + EYE) * MM, pos.current.y * MM);
     camera.rotation.set(pitch.current, yaw.current, 0, 'YXZ');
   });
+  useEffect(() => {
+    // отладочный доступ к положению камеры (e2e)
+    const w = window as unknown as Record<string, unknown>;
+    w.__hbCam = () => ({ x: camera.position.x, y: camera.position.y - level.elevation * MM, z: camera.position.z });
+    return () => void delete w.__hbCam;
+  }, [camera, level.elevation]);
   return null;
 }
 
@@ -289,7 +295,7 @@ function OrbitRig({ project, levelId }: { project: Project; levelId: string }) {
     const cx = ((bb.minX + bb.maxX) / 2) * MM;
     const cz = ((bb.minY + bb.maxY) / 2) * MM;
     const size = Math.max(6, Math.max(bb.maxX - bb.minX, bb.maxY - bb.minY) * MM);
-    camera.position.set(cx + size * 0.35, size * 1.05, cz + size * 0.85);
+    camera.position.set(cx + size * 0.2, size * 1.15, cz + size * 0.8);
     camera.rotation.set(0, 0, 0);
     ctrl.current?.target.set(cx, 0.5, cz);
     ctrl.current?.update();

@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "e2e": "node e2e/stage1.cjs && node e2e/stage2.cjs && node e2e/stage3.cjs && node e2e/stage456.cjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",

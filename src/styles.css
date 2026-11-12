@@ -326,6 +326,7 @@ code {
 }
 .panel-section > button {
   width: 100%;
+  white-space: normal;
 }
 .field {
   display: flex;
