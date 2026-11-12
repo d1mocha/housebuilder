@@ -108,7 +108,7 @@ const RouteG = memo(function RouteG({ route, k, scope, locked, color }: { route:
   const prims = useMemo(() => routePrims(route, k, color), [route, k, color]);
   return (
     <g data-t="route" data-id={route.id} data-scope={scope} style={{ pointerEvents: locked ? 'none' : undefined, cursor: 'move' }}>
-      <polyline points={route.points.map((q) => `${q.x},${q.y}`).join(' ')} fill="none" stroke="#000" strokeOpacity={0.001} strokeWidth={Math.max(10 / (PX_PER_PAPER_MM / k), routeDef(route.kind)?.width?.(route.params) ?? 0)} />
+      <polyline points={route.points.map((q) => `${q.x},${q.y}`).join(' ')} fill="none" stroke="#000" strokeOpacity={0.001} strokeWidth={Math.max(8 / (PX_PER_PAPER_MM / k), routeDef(route.kind)?.width?.(route.params) ?? 0)} />
       <Prims prims={prims} k={k} />
     </g>
   );
@@ -393,6 +393,16 @@ export function Editor2D() {
     if (!el) return null;
     const ds = (el as HTMLElement).dataset;
     return { type: ds.t as Sel['type'], id: ds.id ?? '', scope: ds.scope ?? level.id };
+  };
+
+  /** Объект под точкой экрана (нужно для dblclick: при захвате указателя событие приходит на сам SVG). */
+  const hitAt = (clientX: number, clientY: number): Sel | null => {
+    for (const el of document.elementsFromPoint(clientX, clientY)) {
+      if (!svgRef.current?.contains(el)) continue;
+      const sel = hitSel(el);
+      if (sel) return sel;
+    }
+    return null;
   };
 
   const itemGhost = (raw: Vec2, kind: string): Item => {
@@ -770,7 +780,7 @@ export function Editor2D() {
       return;
     }
     if (tl !== 'select') return;
-    const sel = hitSel(e.target);
+    const sel = hitAt(e.clientX, e.clientY);
     if (!sel) return;
     if (sel.type === 'item') {
       const it = getContainer(project, sel.scope)?.items.find((i) => i.id === sel.id);
