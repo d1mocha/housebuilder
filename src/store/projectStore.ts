@@ -11,7 +11,10 @@ export type Recipe = (draft: Project) => void;
 
 /** Применить изменение и пересчитать производные данные (помещения) на этажах с изменёнными стенами. */
 export function applyRecipe(base: Project, fn: Recipe): Project {
-  let next = produce(base, fn);
+  // результат рецепта игнорируется: выражения вида `d => (d.x = 1)` не должны ломать immer
+  let next = produce(base, (d) => {
+    fn(d);
+  });
   if (next === base) return base;
   const changed = new Set<string>();
   for (const l of next.levels) {

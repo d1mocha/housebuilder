@@ -316,6 +316,8 @@ function ItemProps({ item, sel, project }: { item: Item; sel: Sel; project: Proj
       </div>
       {def && item.kind !== 'cabinet' && <ParamsForm defs={def.params} params={item.params} project={project} onChange={(k, v) => mut((x) => (x.params[k] = v))} />}
       <Info label={t('Габарити Ш×Г×В', 'Габариты Ш×Г×В')} value={`${Math.round(s.w)}×${Math.round(s.d)}×${Math.round(s.h)} мм`} />
+      {item.kind === 'ht-radiator' && <Info label={t('Теплова потужність', 'Тепловая мощность')} value={<b>{num(item.params, 'sections', 8) * num(item.params, 'sectionPower', 150)} Вт</b>} />}
+      {def?.layer === 'gas' && <div className="warn-box">{t('Лише відображення. Проєктування та підключення газу виконує ліцензована організація (оператор ГРМ).', 'Только отображение. Проектирование и подключение газа выполняет лицензированная организация (оператор ГРМ).')}</div>}
       <Actions sel={sel} />
     </Section>
   );

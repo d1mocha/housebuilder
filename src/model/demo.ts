@@ -27,7 +27,7 @@ export function snapshotBaseline(p: Project): BaselineWall[] {
 }
 
 export function createDemoProject(): Project {
-  const p = createProject('apartment', 'Демо: двокімнатна квартира 55 м²');
+  const p = createProject('apartment', 'Демо: двокімнатна квартира ≈53 м²');
   const lvl: Level = p.levels[0];
   lvl.height = 2600;
   const W: Record<string, Wall> = {};
@@ -195,8 +195,8 @@ export function createDemoProject(): Project {
   put('el-socket', 8850, 500, 90, { count: 2 });
   put('el-socket', 8850, 3300, 90, { count: 2 });
   put('el-socket', 5400, 150, 0, { count: 2 });
-  put('el-socket', 800, 6650, 180, { count: 2, group: 'g-kitchen' }, 1100);
-  put('el-socket', 1600, 6650, 180, { count: 2, group: 'g-kitchen' }, 1100);
+  put('el-socket', 2160, 6650, 180, { count: 2, group: 'g-kitchen' }, 1100);
+  put('el-socket', 2850, 6650, 180, { count: 2, group: 'g-kitchen' }, 1100);
   put('el-cooker', 2450, 6650, 180);
   put('el-socket', 8200, 5650, 180, { count: 1, ip44: true }, 1000);
   put('el-switch', 4480, 3800, 180);
@@ -211,7 +211,7 @@ export function createDemoProject(): Project {
   put('el-light', 7900, 6200, 0);
   lvl.routes.push({ id: newId('rt'), kind: 'el-cable', points: [{ x: 6300, y: 6650 }, { x: 6300, y: 4000 }, { x: 4500, y: 4000 }, { x: 4500, y: 1500 }], params: { group: 'g-sockets', section: 2.5, cores: 3, z: 2500, chase: true, chaseDepth: 20, chaseWidth: 20 } });
   lvl.routes.push({ id: newId('rt'), kind: 'el-cable', points: [{ x: 6300, y: 6650 }, { x: 5200, y: 6650 }, { x: 5200, y: 5300 }, { x: 5200, y: 4000 }, { x: 2300, y: 4000 }, { x: 2300, y: 2000 }], params: { group: 'g-light', section: 1.5, cores: 3, z: 2550, chase: true, chaseDepth: 20, chaseWidth: 20 } });
-  lvl.routes.push({ id: newId('rt'), kind: 'el-cable', points: [{ x: 6300, y: 6650 }, { x: 3460, y: 6650 }, { x: 2450, y: 6650 }, { x: 800, y: 6650 }], params: { group: 'g-kitchen', section: 2.5, cores: 3, z: 300, chase: true, chaseDepth: 20, chaseWidth: 20 } });
+  lvl.routes.push({ id: newId('rt'), kind: 'el-cable', points: [{ x: 6300, y: 6650 }, { x: 3460, y: 6650 }, { x: 2850, y: 6650 }, { x: 2160, y: 6650 }], params: { group: 'g-kitchen', section: 2.5, cores: 3, z: 300, chase: true, chaseDepth: 20, chaseWidth: 20 } });
   // Сантехника
   put('pl-riser', 7100, 6520, 0, { type: 'sewer' });
   put('pl-riser', 7100, 6300, 0, { type: 'cold' });

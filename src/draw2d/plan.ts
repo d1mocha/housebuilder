@@ -7,6 +7,7 @@ import type { Dim, Item, Level, Opening, Room, Route, Site, Vec2, Wall, Zone } f
 import { differencePolys, fromRing, openingGeom, unionPolys, wallPolygon } from '../model/walls';
 import type { Prim2, Style } from './prims';
 import { arcPoints, circle, line, poly, text, transform } from './prims';
+import { snakePath } from '../calc/underfloor';
 
 export const COL = {
   wallBearing: '#3d4756',
@@ -262,6 +263,18 @@ export function zonePrims(zone: Zone, k: number, label?: string): Prim2[] {
   const def = zoneDef(zone.kind);
   const color = def?.color ?? '#94a3b8';
   const out: Prim2[] = [poly(zone.points, true, { fill: color, stroke: color, w: 0.25, opacity: 0.45 })];
+  if (zone.kind === 'ht-floor' && zone.points.length >= 3) {
+    // раскладка контура «змейкой» (при очень мелком шаге прореживаем линии для отображения)
+    const pitch = typeof zone.params.pitch === 'number' ? zone.params.pitch : 150;
+    const offset = typeof zone.params.offset === 'number' ? zone.params.offset : 100;
+    let shown = Math.max(50, pitch);
+    let path = snakePath(zone.points, shown, offset);
+    while (path.length > 600) {
+      shown *= 2;
+      path = snakePath(zone.points, shown, offset);
+    }
+    if (path.length > 1) out.push({ t: 'poly', pts: path, closed: false, s: { stroke: '#ea580c', w: 0.18 } });
+  }
   if (zone.points.length >= 3) {
     const c = interiorPoint(zone.points);
     const area = polygonArea(zone.points) / 1e6;

@@ -1,4 +1,5 @@
 // Проверки модели по справочнику норм → список нарушений с переходом к объекту.
+import { cableAmpacity, networkSummary } from '../calc/networks';
 import { underfloorCalc } from '../calc/underfloor';
 import { WET_ROOMS } from '../catalog/finishes';
 import { itemDef, num, routeDef, str } from '../catalog/registry';
@@ -202,6 +203,13 @@ export function validateProject(p: Project): Issue[] {
         }
       }
     }
+  }
+
+  // ── Электрические группы ──
+  for (const g of networkSummary(p).groups) {
+    if (g.points === 0) continue;
+    if (g.currentA > g.breaker) push('el.group.overload', 'warn', L(`Група «${g.name}»: розрахунковий струм ${g.currentA.toFixed(1)} А більший за автомат ${g.breaker} А`, `Группа «${g.name}»: расчётный ток ${g.currentA.toFixed(1)} А больше автомата ${g.breaker} А`));
+    if (g.breaker > cableAmpacity(g.section)) push('el.group.cable', 'warn', L(`Група «${g.name}»: автомат ${g.breaker} А завеликий для кабелю ${g.section} мм²`, `Группа «${g.name}»: автомат ${g.breaker} А велик для кабеля ${g.section} мм²`));
   }
 
   // ── Участок ──

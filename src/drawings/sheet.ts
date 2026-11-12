@@ -44,7 +44,7 @@ export interface Sheet {
 }
 
 const PAPER = { A4: [210, 297], A3: [297, 420] } as const;
-const SCALES = [10, 20, 25, 40, 50, 75, 100, 150, 200, 250, 400, 500, 1000];
+const SCALES = [10, 20, 25, 50, 75, 100, 150, 200, 250, 500, 1000];
 const STAMP_W = 185;
 const STAMP_H = 40;
 

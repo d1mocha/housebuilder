@@ -321,6 +321,7 @@ export function Editor2D() {
         getContainer(d, scope)?.routes.push({ id, kind, points: p.pts.map((q) => ({ x: Math.round(q.x), y: Math.round(q.y) })), params: { ...(def?.defaults ?? {}) } });
       });
       ui().select({ type: 'route', id, scope });
+      ui().setTool('select');
     } else if (ui().tool === 'zone' && p.pts.length >= 3) {
       const def = zoneDef(kind);
       const scope = scopeOfKind(def);
@@ -329,6 +330,7 @@ export function Editor2D() {
         getContainer(d, scope)?.zones.push({ id, kind, points: p.pts.map((q) => ({ x: Math.round(q.x), y: Math.round(q.y) })), params: { ...(def?.defaults ?? {}) } });
       });
       ui().select({ type: 'zone', id, scope });
+      ui().setTool('select');
     }
     setPv(emptyPreview);
   };
@@ -568,7 +570,7 @@ export function Editor2D() {
     const p = pvRef.current;
     if (tl === 'wall' || tl === 'room') {
       const sn = snap(world, { from: tl === 'wall' ? (p.pts[0] ?? null) : null });
-      setPv({ ...p, cur: sn.point, snap: sn });
+      setPv((prev) => ({ ...prev, cur: sn.point, snap: sn }));
     } else if (tl === 'door' || tl === 'window' || tl === 'portal') {
       const nw = nearestWall(world, level.walls, 500);
       if (nw) {
@@ -580,19 +582,20 @@ export function Editor2D() {
         o.swing = side >= 0 ? 'L' : 'R';
         o.hinge = nw.t * L < o.pos ? 'a' : 'b';
         o.id = 'preview';
-        setPv({ ...p, opening: o, cur: world });
-      } else setPv({ ...p, opening: null, cur: world });
+        setPv((prev) => ({ ...prev, opening: o, cur: world }));
+      } else setPv((prev) => ({ ...prev, opening: null, cur: world }));
     } else if (tl === 'dim') {
       const sn = snap(world, { points: extraPoints('dim'), grid: 10 });
-      setPv({ ...p, cur: p.pts.length === 2 ? world : sn.point, snap: p.pts.length === 2 ? null : sn });
+      setPv((prev) => ({ ...prev, cur: p.pts.length === 2 ? world : sn.point, snap: p.pts.length === 2 ? null : sn }));
     } else if (tl === 'item' && toolKind) {
-      setPv({ ...p, ghost: itemGhost(world, toolKind), cur: world });
+      const ghost = itemGhost(world, toolKind);
+      setPv((prev) => ({ ...prev, ghost, cur: world }));
     } else if (tl === 'route' || tl === 'zone') {
       const isSite = scopeOfKind(tl === 'route' ? routeDef(toolKind ?? '') : zoneDef(toolKind ?? '')) === 'site';
       const sn = snap(world, { from: p.pts[p.pts.length - 1] ?? null, points: extraPoints('route'), grid: 50, noWalls: isSite });
-      setPv({ ...p, cur: sn.point, snap: sn });
+      setPv((prev) => ({ ...prev, cur: sn.point, snap: sn }));
     } else if (tl === 'calibrate' && !p.calibAsk) {
-      setPv({ ...p, cur: world });
+      setPv((prev) => ({ ...prev, cur: world }));
     }
     ui().set({ cursor: world });
   };

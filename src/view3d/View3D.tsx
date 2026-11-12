@@ -294,15 +294,20 @@ function OrbitRig({ project, levelId }: { project: Project; levelId: string }) {
     const bb = pts.length ? bbox(pts) : { minX: 0, minY: 0, maxX: 8000, maxY: 6000 };
     const cx = ((bb.minX + bb.maxX) / 2) * MM;
     const cz = ((bb.minY + bb.maxY) / 2) * MM;
-    const size = Math.max(5, Math.hypot(bb.maxX - bb.minX, bb.maxY - bb.minY) * MM);
-    // дистанция, при которой габарит помещается и по вертикали, и по горизонтали
+    // радиус описанной сферы здания (с учётом высоты этажей и крыши)
+    let top = 0;
+    for (const l of project.levels) top = Math.max(top, (l.elevation + l.height + l.slab) * MM);
+    if (project.roof.type === 'gable' || project.roof.type === 'hip') top += 1.5;
+    const radius = Math.max(3, 0.5 * Math.hypot((bb.maxX - bb.minX) * MM, (bb.maxY - bb.minY) * MM, top));
     const cam = camera as THREE.PerspectiveCamera;
     const vfov = ((cam.fov ?? 50) * Math.PI) / 180;
     const hfov = 2 * Math.atan(Math.tan(vfov / 2) * (cam.aspect || 1));
-    const dist = (size / 2 / Math.tan(Math.min(vfov, hfov) / 2)) * 1.05;
-    camera.position.set(cx + dist * 0.12, dist * 0.82, cz + dist * 0.56);
+    const dist = (radius / Math.sin(Math.min(vfov, hfov) / 2)) * 1.02;
+    const dir = new THREE.Vector3(0.14, 0.8, 0.58).normalize();
+    const ty = top * 0.35;
+    camera.position.set(cx + dir.x * dist, ty + dir.y * dist, cz + dir.z * dist);
     camera.rotation.set(0, 0, 0);
-    ctrl.current?.target.set(cx, 0.5, cz);
+    ctrl.current?.target.set(cx, ty, cz);
     ctrl.current?.update();
     invalidate();
   };
@@ -374,6 +379,13 @@ function Lights({ project }: { project: Project }) {
 }
 
 function Scene() {
+  const gl = useThree((s) => s.gl);
+  useEffect(() => {
+    // отладочный доступ к статистике рендера (e2e, оценка производительности)
+    const w = window as unknown as Record<string, unknown>;
+    w.__hbGl = () => ({ calls: gl.info.render.calls, triangles: gl.info.render.triangles, geometries: gl.info.memory.geometries, textures: gl.info.memory.textures });
+    return () => void delete w.__hbGl;
+  }, [gl]);
   const project = useProject((s) => s.project);
   const activeLevelId = useUi((s) => s.activeLevelId);
   const walk = useUi((s) => s.walk);
