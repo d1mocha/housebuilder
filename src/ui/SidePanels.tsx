@@ -58,18 +58,47 @@ export function useIssues(): Issue[] {
   }, [project]);
 }
 
+/** Перейти к объекту нарушения: этаж, выделение, центрирование вида. */
+export function jumpToIssue(i: Issue): void {
+  const ui = useUi.getState();
+  if (i.levelId && i.levelId !== ui.activeLevelId) ui.setActiveLevel(i.levelId);
+  if (ui.tool !== 'select') ui.setTool('select');
+  if (i.sel) ui.select(i.sel);
+  if (i.point) ui.focusOn(i.point);
+}
+
+const SEVERITY_ORDER = { error: 0, warn: 1, info: 2 };
+export const sortIssues = (issues: Issue[]): Issue[] => [...issues].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
+
+/** Список нарушений (используется в правой панели и в выпадающем списке кнопки ⚠). */
+export function IssueList({ issues, onJump }: { issues: Issue[]; onJump?: () => void }) {
+  const { t, ls } = useT();
+  const sorted = sortIssues(issues);
+  return (
+    <div className="issues">
+      {sorted.length === 0 && <p className="hint">{t('Порушень не знайдено.', 'Нарушений не найдено.')}</p>}
+      {sorted.map((i) => (
+        <button
+          key={i.id}
+          className={`issue ${i.severity}`}
+          onClick={() => {
+            jumpToIssue(i);
+            onJump?.();
+          }}
+          title={i.ruleId}
+        >
+          <span className="dot" />
+          <span>{ls(i.message)}</span>
+          {(i.sel || i.point) && <span className="go">→</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function IssuesPanel() {
   const { t, ls } = useT();
   const issues = useIssues();
-  const jump = (i: Issue) => {
-    const ui = useUi.getState();
-    if (i.levelId && i.levelId !== ui.activeLevelId) ui.setActiveLevel(i.levelId);
-    if (i.sel) ui.select(i.sel);
-    if (i.point) ui.focusOn(i.point);
-    if (ui.tool !== 'select') ui.setTool('select');
-  };
-  const order = { error: 0, warn: 1, info: 2 };
-  const sorted = [...issues].sort((a, b) => order[a.severity] - order[b.severity]);
   return (
     <Section
       title={`${t('Перевірка норм', 'Проверка норм')} · ${issues.filter((i) => i.severity !== 'info').length}`}
@@ -79,15 +108,7 @@ export function IssuesPanel() {
         </button>
       }
     >
-      <div className="issues">
-        {sorted.length === 0 && <p className="hint">{t('Порушень не знайдено.', 'Нарушений не найдено.')}</p>}
-        {sorted.map((i) => (
-          <button key={i.id} className={`issue ${i.severity}`} onClick={() => jump(i)} title={i.ruleId}>
-            <span className="dot" />
-            <span>{ls(i.message)}</span>
-          </button>
-        ))}
-      </div>
+      <IssueList issues={issues} />
       <p className="disclaimer">{ls(DISCLAIMER)}</p>
     </Section>
   );

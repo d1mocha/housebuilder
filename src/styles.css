@@ -928,3 +928,37 @@ table.keys td {
   max-width: 100%;
   height: auto;
 }
+
+/* Список нарушений из верхней панели */
+.issues-pop {
+  width: 440px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 8px;
+}
+.issues-pop > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.issues-pop .issue,
+.dropdown .issue {
+  border: 1px solid var(--line);
+  padding: 6px 8px;
+  margin: 0;
+}
+.issue .go {
+  margin-left: auto;
+  color: var(--accent);
+}
+table.rules-table {
+  table-layout: fixed;
+}
+table.rules-table td.small {
+  max-width: none;
+  word-break: break-word;
+}
+table.rules-table .num {
+  width: 100%;
+}

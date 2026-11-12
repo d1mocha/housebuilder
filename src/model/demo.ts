@@ -6,6 +6,7 @@ import { newId } from './ids';
 import { makeItem } from './ops';
 import type { BaselineWall, Item, Level, Params, Project, RoomType, Vec2, Wall } from './types';
 import { roomSurfaces, syncRooms } from './walls';
+import { itemsOutsideRooms } from './checks';
 
 /** Зафиксировать текущее состояние стен как «существующее» (для проверки перепланировки). */
 export function snapshotBaseline(p: Project): BaselineWall[] {
@@ -225,6 +226,9 @@ export function createDemoProject(): Project {
   put('vt-exhaust', 8850, 6500, 90);
 
   syncRooms(lvl, roomDefaults());
+  // страховка: в демо не должно остаться объектов вне помещений
+  const outside = new Set(itemsOutsideRooms(lvl).map((it) => it.id));
+  if (outside.size) lvl.items = lvl.items.filter((it) => !outside.has(it.id));
   p.baseline = snapshotBaseline(p);
   p.stamp = { object: 'Квартира двокімнатна', address: 'м. Київ', author: '', customer: '' };
   return p;

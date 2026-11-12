@@ -8,14 +8,14 @@ import { planDir, sunPosition } from '../calc/sun';
 import { itemDef, routeDef, zoneDef } from '../catalog/registry';
 import { itemSize } from '../draw2d/plan';
 import { useT } from '../i18n';
-import { bbox } from '../model/geometry';
+import { bbox, rectCorners } from '../model/geometry';
 import { getContainer } from '../model/ops';
 import type { Item, LayerId, Level, Project, Sel, Vec2 } from '../model/types';
 import { useProject } from '../store/projectStore';
 import { useUi } from '../store/uiStore';
 import { buildFloors, buildItemObject, buildRoof, buildRouteObject, buildSiteGround, buildWalls, buildZoneObject, collisionSegments, terrainHeight } from './build';
 import { loadCustomModel } from './models';
-import { resolveCollisions } from './walk';
+import { resolveCollisions, walkStart } from './walk';
 
 const MM = 0.001;
 const EYE = 1600;
@@ -187,14 +187,17 @@ function SelectionBox({ project, sel }: { project: Project; sel: Sel | null }) {
   );
 }
 
-/** Точка старта прогулки: центр самого большого помещения. */
-function walkStart(level: Level): Vec2 {
-  const r = [...level.rooms].sort((a, b) => b.area - a.area)[0];
-  if (r) return r.seed;
-  const pts = level.walls.flatMap((w) => [w.a, w.b]);
-  if (!pts.length) return { x: 0, y: 0 };
-  const bb = bbox(pts);
-  return { x: (bb.minX + bb.maxX) / 2, y: (bb.minY + bb.maxY) / 2 };
+/** Контуры мебели, мешающей ходить (выше 25 см, ниже уровня глаз). */
+export function walkObstacles(level: Level): Vec2[][] {
+  const out: Vec2[][] = [];
+  for (const it of level.items) {
+    const def = itemDef(it.kind);
+    if ((def?.layer ?? 'furniture') !== 'furniture') continue;
+    const s = itemSize(it);
+    if (s.h < 250 || it.z > 1700) continue;
+    out.push(rectCorners({ x: it.x, y: it.y }, s.w, s.d, it.rot));
+  }
+  return out;
 }
 
 function WalkControls({ level }: { level: Level }) {
@@ -207,7 +210,10 @@ function WalkControls({ level }: { level: Level }) {
   const segs = useMemo(() => collisionSegments(level), [level.walls, level.openings]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    pos.current = walkStart(level);
+    const start = walkStart(level, walkObstacles(level));
+    pos.current = start.pos;
+    yaw.current = start.yaw;
+    pitch.current = 0;
     const dom = gl.domElement;
     const lock = () => {
       try {
@@ -277,7 +283,7 @@ function WalkControls({ level }: { level: Level }) {
   useEffect(() => {
     // отладочный доступ к положению камеры (e2e)
     const w = window as unknown as Record<string, unknown>;
-    w.__hbCam = () => ({ x: camera.position.x, y: camera.position.y - level.elevation * MM, z: camera.position.z });
+    w.__hbCam = () => ({ x: camera.position.x, y: camera.position.y - level.elevation * MM, z: camera.position.z, yaw: yaw.current });
     return () => void delete w.__hbCam;
   }, [camera, level.elevation]);
   return null;

@@ -24,7 +24,7 @@ import { add, angleDeg, bbox, closestOnSegment, dist, dot, eq, mul, norm, perp, 
 import { newId } from '../model/ids';
 import { duplicateEntity, flipWall, getContainer, getLevel, makeItem, moveNode, removeEntity, splitWall, translateWall } from '../model/ops';
 import type { Item, LayerId, Level, Opening, Project, Route, Sel, Vec2, Wall, Zone } from '../model/types';
-import { clampOpeningPos, nearestWall, openingGeom, wallDir, wallLength, wallPolygon } from '../model/walls';
+import { clampOpeningPos, nearestWall, openingGeom, wallDir, wallFacingRot, wallLength, wallPolygon } from '../model/walls';
 import { useProject } from '../store/projectStore';
 import { useUi } from '../store/uiStore';
 import { ContextMenu } from './ContextMenu';
@@ -193,9 +193,13 @@ export function Editor2D() {
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setSize({ w: Math.max(100, el.clientWidth), h: Math.max(100, el.clientHeight) }));
+    const measure = () => {
+      setSize({ w: Math.max(100, el.clientWidth), h: Math.max(100, el.clientHeight) });
+      setMeasured(true);
+    };
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
-    setSize({ w: Math.max(100, el.clientWidth), h: Math.max(100, el.clientHeight) });
+    measure();
     return () => ro.disconnect();
   }, []);
 
@@ -208,21 +212,28 @@ export function Editor2D() {
     setView({ cx: (bb.minX + bb.maxX) / 2, cy: (bb.minY + bb.maxY) / 2, zoom: Math.max(0.004, Math.min(1.5, zoom)) });
   }, []);
 
-  const fittedFor = useRef('');
+  // Пока пользователь сам не менял вид, план автоматически вписывается (в т. ч. после первого измерения окна).
+  const autoFit = useRef(true);
+  const [measured, setMeasured] = useState(false);
   useEffect(() => {
-    const key = `${project.id}|${level?.id}|${size.w > 100}`;
-    if (fittedFor.current !== key && size.w > 100) {
-      fittedFor.current = key;
-      fit();
-    }
-  }, [project.id, level?.id, size.w, fit]);
+    autoFit.current = true;
+  }, [project.id, level?.id]);
+  useEffect(() => {
+    if (measured && autoFit.current) fit();
+  }, [project.id, level?.id, size.w, size.h, measured, fit]);
 
   useEffect(() => {
-    if (focus) setView((v) => ({ ...v, cx: focus.point.x, cy: focus.point.y, zoom: Math.max(v.zoom, 0.1) }));
+    if (focus) {
+      autoFit.current = false;
+      setView((v) => ({ ...v, cx: focus.point.x, cy: focus.point.y, zoom: Math.max(v.zoom, 0.1) }));
+    }
   }, [focus]);
 
   useEffect(() => {
-    const onFit = () => fit();
+    const onFit = () => {
+      autoFit.current = true;
+      fit();
+    };
     window.addEventListener('hb-fit', onFit);
     return () => window.removeEventListener('hb-fit', onFit);
   }, [fit]);
@@ -252,6 +263,7 @@ export function Editor2D() {
       const my = e.clientY - r.top - r.height / 2;
       const wx = mx / v.zoom + v.cx;
       const wy = my / v.zoom + v.cy;
+      autoFit.current = false;
       setView({ zoom, cx: wx - mx / zoom, cy: wy - my / zoom });
     };
     el.addEventListener('wheel', onWheel, { passive: false });
@@ -422,7 +434,7 @@ export function Editor2D() {
       if (nw && nw.t > 0 && nw.t < 1 && nw.dist > 1) {
         const u = norm(sub(raw, nw.point));
         const c = add(nw.point, mul(u, nw.wall.thickness / 2));
-        Object.assign(it, { x: Math.round(c.x), y: Math.round(c.y), rot: (Math.round(angleDeg(u) - 90) + 360) % 360 });
+        Object.assign(it, { x: Math.round(c.x), y: Math.round(c.y), rot: wallFacingRot(nw.wall, raw) });
       }
     }
     return it;
@@ -566,7 +578,10 @@ export function Editor2D() {
         const dx = e.clientX - dg.sx;
         const dy = e.clientY - dg.sy;
         if (Math.abs(dx) + Math.abs(dy) > 3) dg.moved = true;
-        if (dg.moved) setView((v) => ({ ...v, cx: dg.cx0 - dx / v.zoom, cy: dg.cy0 - dy / v.zoom }));
+        if (dg.moved) {
+          autoFit.current = false;
+          setView((v) => ({ ...v, cx: dg.cx0 - dx / v.zoom, cy: dg.cy0 - dy / v.zoom }));
+        }
         return;
       }
       const delta = sub(world, dg.start);
@@ -661,7 +676,7 @@ export function Editor2D() {
         if (nw && nw.t > 0 && nw.t < 1 && nw.dist > 1) {
           const u = norm(sub(raw, nw.point));
           const c = add(nw.point, mul(u, nw.wall.thickness / 2));
-          pose = { x: Math.round(c.x), y: Math.round(c.y), rot: (Math.round(angleDeg(u) - 90) + 360) % 360 };
+          pose = { x: Math.round(c.x), y: Math.round(c.y), rot: wallFacingRot(nw.wall, raw) };
         }
       }
       store().transient((dr) => {

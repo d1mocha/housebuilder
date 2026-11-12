@@ -1,5 +1,5 @@
 // Диалоги: новый проект, список проектов, справка, справочник норм, каталог отделки, электрические группы.
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { cableAmpacity, networkSummary } from '../calc/networks';
 import { FINISH_TYPE_NAMES } from '../catalog/finishes';
 import { fmt, useT } from '../i18n';
@@ -174,24 +174,33 @@ function RulesDialog({ onClose }: { onClose: () => void }) {
       <p className="hint">
         {t('Значення редагуються і зберігаються в проєкті. Позначка «перевірено» — ваша відмітка, що значення звірено з чинним документом. Базовий довідник: src/rules/rules.json.', 'Значения редактируются и сохраняются в проекте. Отметка «проверено» — ваша отметка, что значение сверено с действующим документом. Базовый справочник: src/rules/rules.json.')}
       </p>
-      {cats.map((c) => (
-        <div key={c}>
-          <h4>{ls(RULE_CATEGORIES[c] ?? { uk: c, ru: c })}</h4>
-          <table className="data">
-            <thead>
-              <tr>
-                <th>{t('Правило', 'Правило')}</th>
-                <th>{t('Значення', 'Значение')}</th>
-                <th>{t('Джерело', 'Источник')}</th>
-                <th>{t('Перевірено', 'Проверено')}</th>
-                <th>{t('Порушень', 'Нарушений')}</th>
+      <table className="data rules-table" data-table="rules">
+        <colgroup>
+          <col style={{ width: '32%' }} />
+          <col style={{ width: '150px' }} />
+          <col />
+          <col style={{ width: '96px' }} />
+          <col style={{ width: '96px' }} />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>{t('Правило', 'Правило')}</th>
+            <th>{t('Значення', 'Значение')}</th>
+            <th>{t('Джерело', 'Источник')}</th>
+            <th className="center">{t('Перевірено', 'Проверено')}</th>
+            <th className="center">{t('Порушень', 'Нарушений')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cats.map((c) => (
+            <Fragment key={c}>
+              <tr className="total">
+                <td colSpan={5}>{ls(RULE_CATEGORIES[c] ?? { uk: c, ru: c })}</td>
               </tr>
-            </thead>
-            <tbody>
               {rules
                 .filter((r) => r.category === c)
                 .map((r) => (
-                  <tr key={r.id}>
+                  <tr key={r.id} data-rule={r.id}>
                     <td>
                       {ls(r.title)}
                       <br />
@@ -202,13 +211,15 @@ function RulesDialog({ onClose }: { onClose: () => void }) {
                     <td className="center">
                       <input type="checkbox" checked={r.verified} onChange={(e) => setOv(r.id, { verified: e.target.checked })} />
                     </td>
-                    <td className="center">{issues.filter((i) => i.ruleId === r.id).length || ''}</td>
+                    <td className="center" data-col="count">
+                      {issues.filter((i) => i.ruleId === r.id).length || '—'}
+                    </td>
                   </tr>
                 ))}
-            </tbody>
-          </table>
-        </div>
-      ))}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
     </Dialog>
   );
 }

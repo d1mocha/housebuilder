@@ -402,3 +402,21 @@ export function surfaceNetArea(s: RoomSurface, h: number): number {
 export function roomAt(level: Level, p: Vec2): Room | null {
   return level.rooms.find((r) => pointInPolygon(p, r.polygon)) ?? null;
 }
+
+/**
+ * Точный поворот объекта, стоящего спинкой к стене со стороны точки p: угол берётся из направления стены,
+ * а не из вектора «точка → стена», поэтому для осевых стен получается ровно 0/90/180/270.
+ */
+export function wallFacingRot(wall: Wall, p: Vec2): number {
+  const d = sub(wall.b, wall.a);
+  // нормаль стороны L = (-dy, dx); объект смотрит от стены в сторону точки
+  const side = cross(d, sub(p, wall.a)) >= 0 ? 1 : -1;
+  const ux = -d.y * side;
+  const uy = d.x * side;
+  let deg = (Math.atan2(uy, ux) * 180) / Math.PI - 90;
+  deg = ((deg % 360) + 360) % 360;
+  const r = Math.round(deg);
+  // осевые и почти осевые углы — ровно целое значение; остальные — с точностью 0,01°
+  const out = Math.abs(deg - r) < 0.01 ? r : Math.round(deg * 100) / 100;
+  return out === 360 ? 0 : out;
+}
