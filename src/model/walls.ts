@@ -211,7 +211,7 @@ export interface RoomDefaults {
  * Мутирует level (вызывается внутри immer-черновика).
  */
 export function syncRooms(level: Level, defaults: RoomDefaults): void {
-  const { rooms: detected } = detectRooms(level.walls);
+  const { rooms: detected } = detectRooms(geomOf(level).walls);
   const prev = level.rooms;
   const used = new Set<string>();
   const next: Room[] = [];
@@ -341,6 +341,7 @@ export interface RoomSurface {
 export function roomSurfaces(level: Level, room: Room): RoomSurface[] {
   const out: RoomSurface[] = [];
   const poly = room.polygon;
+  const g = geomOf(level);
   for (let i = 0; i < poly.length; i++) {
     const a = poly[i];
     const b = poly[(i + 1) % poly.length];
@@ -349,7 +350,7 @@ export function roomSurfaces(level: Level, room: Room): RoomSurface[] {
     const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
     const ed = norm(sub(b, a));
     let found: { wall: Wall; side: WallSide } | null = null;
-    for (const w of level.walls) {
+    for (const w of g.walls) {
       const wd = wallDir(w);
       if (Math.abs(cross(wd, ed)) > 0.02) continue;
       const t = projectT(m, w.a, w.b);
@@ -363,7 +364,7 @@ export function roomSurfaces(level: Level, room: Room): RoomSurface[] {
     }
     const s: RoomSurface = {
       roomId: room.id,
-      wallId: found?.wall.id ?? null,
+      wallId: found ? baseWallId(found.wall.id) : null,
       side: found?.side ?? 'L',
       a,
       b,
@@ -373,7 +374,7 @@ export function roomSurfaces(level: Level, room: Room): RoomSurface[] {
     };
     if (found) {
       const w = found.wall;
-      for (const o of level.openings) {
+      for (const o of g.openings) {
         if (o.wallId !== w.id) continue;
         const g = openingGeom(o, w);
         const t1 = projectT(g.p1, a, b) * L;
@@ -419,4 +420,188 @@ export function wallFacingRot(wall: Wall, p: Vec2): number {
   // осевые и почти осевые углы — ровно целое значение; остальные — с точностью 0,01°
   const out = Math.abs(deg - r) < 0.01 ? r : Math.round(deg * 100) / 100;
   return out === 360 ? 0 : out;
+}
+
+// ───────── Дуговые стены ─────────
+
+export interface ArcInfo {
+  center: Vec2;
+  radius: number;
+  /** Угол точки a относительно центра, рад. */
+  a0: number;
+  /** Полный угол дуги со знаком (от a к b), рад. */
+  sweep: number;
+  length: number;
+}
+
+/** Параметры дуги стены; null — стена прямая. */
+export function arcInfo(w: Wall): ArcInfo | null {
+  const s = w.arc ?? 0;
+  const c = dist(w.a, w.b);
+  if (Math.abs(s) < 1 || c < 1) return null;
+  const sg = Math.sign(s);
+  const abs = Math.min(Math.abs(s), c * 0.9);
+  const n = perp(norm(sub(w.b, w.a)));
+  const m = { x: (w.a.x + w.b.x) / 2, y: (w.a.y + w.b.y) / 2 };
+  const radius = (c * c) / (8 * abs) + abs / 2;
+  const center = add(m, mul(n, sg * (abs - radius)));
+  const half = 2 * Math.atan((2 * abs) / c); // половина центрального угла
+  const a0 = Math.atan2(w.a.y - center.y, w.a.x - center.x);
+  const mid = add(m, mul(n, sg * abs));
+  const dir = Math.sign(cross(sub(w.a, center), sub(mid, center))) || 1;
+  return { center, radius, a0, sweep: dir * 2 * half, length: 2 * half * radius };
+}
+
+/** Длина стены по оси (для дуговой — длина дуги). */
+export function wallLen(w: Wall): number {
+  return arcInfo(w)?.length ?? dist(w.a, w.b);
+}
+
+/** Точка на оси стены на расстоянии pos от a (вдоль дуги для дуговой). */
+export function pointAlong(w: Wall, pos: number): Vec2 {
+  const ai = arcInfo(w);
+  if (!ai) return add(w.a, mul(wallDir(w), pos));
+  const ang = ai.a0 + ai.sweep * Math.max(0, Math.min(1, pos / ai.length));
+  return { x: ai.center.x + Math.cos(ang) * ai.radius, y: ai.center.y + Math.sin(ang) * ai.radius };
+}
+
+/** Середина дуги (точка для ручки редактирования). */
+export function arcMid(w: Wall): Vec2 {
+  return pointAlong(w, wallLen(w) / 2);
+}
+
+// ───────── Производная геометрия этажа ─────────
+
+/** Идентификатор исходной стены по идентификатору сегмента дуги. */
+export const baseWallId = (id: string): string => {
+  const i = id.indexOf('~');
+  return i < 0 ? id : id.slice(0, i);
+};
+
+export interface Geom {
+  /** Действующие (не демонтируемые) стены; дуги разбиты на прямые сегменты с id «<id>~<n>». */
+  walls: Wall[];
+  /** Проёмы, привязанные к стенам/сегментам из walls. */
+  openings: Opening[];
+  /** Стены под демонтаж (в исходном виде). */
+  demolished: Wall[];
+}
+
+const geomCache = new WeakMap<Wall[], { openings: Opening[]; sum: number; geom: Geom }>();
+
+/** Контрольная сумма геометрии: кеш остаётся верным и при правке объектов «на месте» (тесты, черновики immer). */
+function geomChecksum(walls: Wall[], openings: Opening[]): number {
+  let s = walls.length * 31 + openings.length * 17;
+  for (const w of walls) s += w.a.x + 2 * w.a.y + 3 * w.b.x + 5 * w.b.y + 7 * w.thickness + 11 * (w.arc ?? 0) + (w.status === 'demolish' ? 13 : 0);
+  for (const o of openings) s += 19 * o.pos + 23 * o.width + o.wallId.length;
+  return s;
+}
+
+/**
+ * Производная геометрия этажа: без демонтируемых стен, дуговые стены — ломаной.
+ * Границы сегментов дуги совпадают с краями проёмов, поэтому проём занимает сегмент целиком.
+ */
+export function geomOf(level: Pick<Level, 'walls' | 'openings'>): Geom {
+  const sum = geomChecksum(level.walls, level.openings);
+  const hit = geomCache.get(level.walls);
+  if (hit && hit.openings === level.openings && hit.sum === sum) return hit.geom;
+  const special = level.walls.some((w) => w.status === 'demolish' || Math.abs(w.arc ?? 0) >= 1);
+  let geom: Geom;
+  if (!special) geom = { walls: level.walls, openings: level.openings, demolished: [] };
+  else {
+    const walls: Wall[] = [];
+    const openings: Opening[] = [];
+    const demolished: Wall[] = [];
+    for (const w of level.walls) {
+      if (w.status === 'demolish') {
+        demolished.push(w);
+        continue;
+      }
+      const ops = level.openings.filter((o) => o.wallId === w.id);
+      const ai = arcInfo(w);
+      if (!ai) {
+        walls.push(w);
+        openings.push(...ops);
+        continue;
+      }
+      const L = ai.length;
+      // жёсткие границы: концы стены и края проёмов
+      const spans = ops
+        .map((o) => ({ o, t0: Math.max(0, o.pos - o.width / 2), t1: Math.min(L, o.pos + o.width / 2) }))
+        .filter((sp) => sp.t1 - sp.t0 > 10)
+        .sort((p, q) => p.t0 - q.t0);
+      const cuts: { t0: number; t1: number; o?: Opening }[] = [];
+      let cur = 0;
+      const maxSeg = Math.max(200, Math.min(600, L / 8));
+      const fill = (t0: number, t1: number) => {
+        if (t1 - t0 < 1) return;
+        const n = Math.max(1, Math.ceil((t1 - t0) / maxSeg));
+        for (let i = 0; i < n; i++) cuts.push({ t0: t0 + ((t1 - t0) * i) / n, t1: t0 + ((t1 - t0) * (i + 1)) / n });
+      };
+      for (const sp of spans) {
+        const t0 = Math.max(cur, sp.t0);
+        if (sp.t1 <= t0) continue;
+        fill(cur, t0);
+        cuts.push({ t0, t1: sp.t1, o: sp.o });
+        cur = sp.t1;
+      }
+      fill(cur, L);
+      cuts.forEach((c, k) => {
+        const a = pointAlong(w, c.t0);
+        const b = pointAlong(w, c.t1);
+        const id = `${w.id}~${k}`;
+        const seg: Wall = { ...w, id, a: k === 0 ? w.a : a, b: k === cuts.length - 1 ? w.b : b };
+        delete seg.arc;
+        walls.push(seg);
+        if (c.o) {
+          const chord = dist(seg.a, seg.b);
+          openings.push({ ...c.o, wallId: id, pos: chord / 2, width: chord });
+        }
+      });
+    }
+    geom = { walls, openings, demolished };
+  }
+  geomCache.set(level.walls, { openings: level.openings, sum, geom });
+  return geom;
+}
+
+export interface WallHit {
+  /** Исходная стена. */
+  wall: Wall;
+  /** Положение вдоль оси стены от a (для дуги — по дуге). */
+  pos: number;
+  /** Ближайшая точка на оси. */
+  point: Vec2;
+  /** Расстояние от точки до оси. */
+  dist: number;
+  /** Сегмент геометрии, в который попала точка. */
+  seg: Wall;
+  /** С какой стороны от стены точка. */
+  side: WallSide;
+}
+
+/** Ближайшая действующая стена к точке (с учётом дуг). */
+export function locateOnWall(level: Pick<Level, 'walls' | 'openings'>, p: Vec2, tol: number): WallHit | null {
+  const g = geomOf(level);
+  let best: { seg: Wall; t: number; point: Vec2; dist: number } | null = null;
+  for (const w of g.walls) {
+    const c = closestOnSegment(p, w.a, w.b);
+    if (Math.max(0, c.dist - w.thickness / 2) <= tol && (!best || c.dist < best.dist)) best = { seg: w, t: c.t, point: c.point, dist: c.dist };
+  }
+  if (!best) return null;
+  const id = baseWallId(best.seg.id);
+  const wall = level.walls.find((w) => w.id === id);
+  if (!wall) return null;
+  let pos = best.t * dist(best.seg.a, best.seg.b);
+  if (id !== best.seg.id) {
+    // положение вдоль дуги: доля угла от начала
+    const ai = arcInfo(wall)!;
+    let d = Math.atan2(best.point.y - ai.center.y, best.point.x - ai.center.x) - ai.a0;
+    const two = Math.PI * 2;
+    if (ai.sweep > 0) d = ((d % two) + two) % two;
+    else d = -((((-d) % two) + two) % two);
+    pos = Math.max(0, Math.min(1, d / ai.sweep)) * ai.length;
+  }
+  const side: WallSide = cross(sub(best.seg.b, best.seg.a), sub(p, best.seg.a)) >= 0 ? 'L' : 'R';
+  return { wall, pos, point: best.point, dist: best.dist, seg: best.seg, side };
 }

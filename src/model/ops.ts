@@ -171,14 +171,14 @@ export function translateWall(level: Level, wallId: string, delta: Vec2): void {
 /** Разделить стену в точке (проекция на ось). Проёмы распределяются по половинам. */
 export function splitWall(level: Level, wallId: string, at: Vec2): string | null {
   const wall = level.walls.find((w) => w.id === wallId);
-  if (!wall) return null;
+  if (!wall || wall.arc) return null; // дуговые стены не делятся
   const L = wallLength(wall);
   const t = projectT(at, wall.a, wall.b);
   const cut = Math.round(t * L);
   if (cut < 100 || cut > L - 100) return null;
   const dir = sub(wall.b, wall.a);
   const pt = { x: Math.round(wall.a.x + (dir.x * cut) / L), y: Math.round(wall.a.y + (dir.y * cut) / L) };
-  const second: Wall = { ...createWall(pt, wall.b), thickness: wall.thickness, material: wall.material, loadBearing: wall.loadBearing, exterior: wall.exterior, finishL: wall.finishL, finishR: wall.finishR };
+  const second: Wall = { ...createWall(pt, wall.b), thickness: wall.thickness, material: wall.material, loadBearing: wall.loadBearing, exterior: wall.exterior, finishL: wall.finishL, finishR: wall.finishR, ...(wall.status ? { status: wall.status } : {}) };
   if (wall.height) second.height = wall.height;
   wall.b = pt;
   level.walls.push(second);
@@ -199,6 +199,7 @@ export function flipWall(level: Level, wallId: string): void {
   const L = wallLength(wall);
   [wall.a, wall.b] = [wall.b, wall.a];
   [wall.finishL, wall.finishR] = [wall.finishR, wall.finishL];
+  if (wall.arc) wall.arc = -wall.arc;
   for (const o of level.openings) {
     if (o.wallId !== wallId) continue;
     o.pos = L - o.pos;

@@ -6,7 +6,7 @@ import { itemDef, num, routeDef, str } from '../catalog/registry';
 import { itemSize } from '../draw2d/plan';
 import { add, circlePolygon, closestOnSegment, cross, dist, distToPolygonEdge, eq, norm, pointInPolygon, polygonDistance, rectCorners, rotate, segmentIntersection, sub } from '../model/geometry';
 import type { Item, Level, LS, Project, Room, Sel, Vec2 } from '../model/types';
-import { detectRooms, wallDir, wallLength } from '../model/walls';
+import { detectRooms, geomOf, wallDir, wallLen } from '../model/walls';
 import { ruleValue } from './index';
 
 export type Severity = 'error' | 'warn' | 'info';
@@ -49,7 +49,7 @@ export function validateProject(p: Project): Issue[] {
       const base = p.baseline.filter((b) => b.levelId === lvl.id);
       const baseIds = new Set(base.map((b) => b.id));
       for (const b of base) {
-        const w = lvl.walls.find((x) => x.id === b.id);
+        const w = lvl.walls.find((x) => x.id === b.id && x.status !== 'demolish');
         const at = { x: (b.a.x + b.b.x) / 2, y: (b.a.y + b.b.y) / 2 };
         if (!w) {
           push('apt.redevelopment', b.loadBearing ? 'error' : 'warn', b.loadBearing ? L('Знесено несучу стіну — це заборонено без проєкту підсилення та погодження', 'Снесена несущая стена — это запрещено без проекта усиления и согласования') : L('Знесено перегородку — перепланування потрібно узаконити (внести зміни до техпаспорта)', 'Снесена перегородка — перепланировку нужно узаконить (внести изменения в техпаспорт)'), { point: at, levelId: lvl.id });
@@ -68,7 +68,7 @@ export function validateProject(p: Project): Issue[] {
         }
         if (b.loadBearing && !w.loadBearing) push('apt.redevelopment', 'warn', L('Стіну з техпаспорта позначено як ненесучу — перевірте за проєктом будинку', 'Стена из техпаспорта помечена как ненесущая — проверьте по проекту дома'), { sel, levelId: lvl.id });
       }
-      newWalls += lvl.walls.filter((w) => !baseIds.has(w.id)).length;
+      newWalls += lvl.walls.filter((w) => !baseIds.has(w.id) && w.status !== 'demolish').length;
     }
     if (newWalls > 0) push('apt.redevelopment', 'info', L(`Додано нових стін: ${newWalls}. Зміни планування вносяться до техпаспорта`, `Добавлено новых стен: ${newWalls}. Изменения планировки вносятся в техпаспорт`));
   }
@@ -87,7 +87,7 @@ export function validateProject(p: Project): Issue[] {
       const w = lvl.walls.find((x) => x.id === o.wallId);
       if (!w) continue;
       const sel: Sel = { type: 'opening', id: o.id, scope };
-      const Lw = wallLength(w);
+      const Lw = wallLen(w);
       if (o.pos - o.width / 2 < -1 || o.pos + o.width / 2 > Lw + 1) push('geometry.opening', 'warn', L('Проріз виходить за межі стіни', 'Проём выходит за пределы стены'), { sel, levelId: scope });
       if (o.kind === 'door') {
         const min = o.style === 'entrance' ? rv('door.entrance.minWidth', 900) : rv('door.minWidth', 700);
@@ -165,7 +165,7 @@ export function validateProject(p: Project): Issue[] {
         if (sl <= maxLen) continue;
         const sd = norm(sub(b, a));
         const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-        const w = lvl.walls.find((x) => x.loadBearing && Math.abs(cross(wallDir(x), sd)) < 0.05 && closestOnSegment(mid, x.a, x.b).dist <= x.thickness / 2 + 30);
+        const w = geomOf(lvl).walls.find((x) => x.loadBearing && Math.abs(cross(wallDir(x), sd)) < 0.05 && closestOnSegment(mid, x.a, x.b).dist <= x.thickness / 2 + 30);
         if (w) {
           push('el.chase.bearingMaxLength', 'warn', L(`Горизонтальна штроба ${m(sl)} м у несучій стіні — заборонена/обмежена, прокладіть трасу по стелі чи в підлозі`, `Горизонтальная штроба ${m(sl)} м в несущей стене — запрещена/ограничена, проложите трассу по потолку или в полу`), { sel: { type: 'route', id: c.id, scope }, point: mid, levelId: scope });
           break;
@@ -216,7 +216,7 @@ export function validateProject(p: Project): Issue[] {
   const site = p.site;
   if (site && site.boundary.length >= 3) {
     const ground = p.levels[0];
-    const outlines = ground ? detectRooms(ground.walls).outline : [];
+    const outlines = ground ? detectRooms(geomOf(ground).walls).outline : [];
     const toBoundary = (poly: Vec2[]) => Math.min(...poly.map((q) => distToPolygonEdge(q, site.boundary)));
     const outside = (poly: Vec2[]) => poly.some((q) => !pointInPolygon(q, site.boundary));
     const minHouse = rv('site.house.boundary', 1000);

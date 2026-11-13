@@ -31,6 +31,9 @@ export type LayerId =
 export type ParamValue = number | string | boolean;
 export type Params = Record<string, ParamValue>;
 
+/** Статус элемента при ремонте: существующий, под демонтаж, новый. */
+export type ElementStatus = 'existing' | 'demolish' | 'new';
+
 /** Сторона стены: L — слева от направления a→b (нормаль (-dy, dx)), R — справа. */
 export type WallSide = 'L' | 'R';
 
@@ -49,6 +52,10 @@ export interface Wall {
   /** Отделка сторон — id из project.finishes. */
   finishL: string;
   finishR: string;
+  /** Статус: существующая / демонтаж / новая. Нет значения — «новая». */
+  status?: ElementStatus;
+  /** Дуговая стена: стрела дуги, мм (со знаком: + выгиб в сторону L). Нет/0 — прямая. */
+  arc?: number;
 }
 
 export type OpeningKind = 'door' | 'window' | 'portal';
@@ -117,6 +124,8 @@ export interface Item {
   z: number;
   params: Params;
   name?: string;
+  /** Статус: существующий / демонтаж / новый. Нет значения — «новый». */
+  status?: ElementStatus;
 }
 
 /** Полилиния: кабель, труба, воздуховод, дорожка, забор. */

@@ -288,3 +288,222 @@ describe('0.3 раскрой: компактнее, с деловыми оста
     expect(performance.now() - t0).toBeLessThan(300);
   });
 });
+
+// ───────── 0.7 Статусы «существующее / демонтаж / новое» и смета ─────────
+import { buildEstimate } from '../src/calc/estimate';
+import { createOpening, createProject, defaultWallStatus, roomDefaults } from '../src/model/defaults';
+import { snapshotBaseline } from '../src/model/demo';
+import { arcInfo, arcMid, baseWallId, detectRooms, geomOf, locateOnWall, pointAlong, roomSurfaces, syncRooms, wallLen } from '../src/model/walls';
+import { validateProject } from '../src/rules/validate';
+import { collisionSegments } from '../src/view3d/build';
+
+describe('0.7 смета по статусам', () => {
+  it('в демо-квартире все стены существующие — материалы кладки не считаются', () => {
+    const p = createDemoProject();
+    expect(p.levels[0].walls.every((w) => w.status === 'existing')).toBe(true);
+    const lines = buildEstimate(p);
+    expect(lines.filter((l) => l.category === 'walls')).toEqual([]);
+    expect(lines.filter((l) => l.category === 'demolition')).toEqual([]);
+    // отделка и новые сети считаются
+    expect(lines.some((l) => l.category === 'paint')).toBe(true);
+    expect(lines.some((l) => l.category === 'cable')).toBe(true);
+    // существующие радиаторы не закупаются, новые розетки — да
+    expect(lines.some((l) => l.key === 'dev.ht-radiator')).toBe(false);
+    expect(lines.some((l) => l.key === 'dev.el-socket')).toBe(true);
+  });
+  it('новая перегородка попадает в «Стены», демонтируемая — в «Демонтаж»', () => {
+    const p = createDemoProject();
+    const l = p.levels[0];
+    const part = l.walls.find((w) => !w.loadBearing && w.thickness === 120)!;
+    const area0 = (wallLen(part) * l.height - l.openings.filter((o) => o.wallId === part.id).reduce((s, o) => s + o.width * o.height, 0)) / 1e6;
+    part.status = 'demolish';
+    l.walls.push({ ...createWall({ x: 1000, y: 150 }, { x: 1000, y: 3800 }, { thickness: 100, material: 'gkl' }), status: 'new' });
+    const lines = buildEstimate(p);
+    const demo = lines.filter((x) => x.category === 'demolition');
+    expect(demo.find((x) => x.key === `demo.wall.brick.120`)!.qty).toBeCloseTo(area0, 2);
+    expect(demo.find((x) => x.key === 'demo.waste')!.qty).toBeCloseTo(area0 * 0.12 * 1.3, 2);
+    const walls = lines.filter((x) => x.category === 'gkl');
+    expect(walls.find((x) => x.key === 'gkl.sheet')!.qty).toBeCloseTo((3.65 * 2.6 * 2) / 3, 1);
+    expect(lines.some((x) => x.key === 'wall.brick')).toBe(false);
+    // демонтаж прибора
+    l.items.find((i) => i.kind === 'ht-radiator')!.status = 'demolish';
+    expect(buildEstimate(p).find((x) => x.key === 'demo.item.ht-radiator')!.qty).toBe(1);
+  });
+  it('статус новой стены по умолчанию: обводка квартиры — существующее, после фиксации и в доме — новое', () => {
+    const apt = createProject('apartment', 'a');
+    expect(defaultWallStatus(apt)).toBe('existing');
+    apt.baseline = snapshotBaseline(apt);
+    expect(defaultWallStatus(apt)).toBe('new');
+    expect(defaultWallStatus(createProject('house', 'h'))).toBe('new');
+  });
+  it('старый проект без статусов: стены квартиры из техпаспорта — существующие, добавленные позже — новые', () => {
+    const p = createDemoProject();
+    const raw = JSON.parse(JSON.stringify(p));
+    raw.schema = 1;
+    for (const w of raw.levels[0].walls) delete w.status;
+    raw.levels[0].walls.push({ ...createWall({ x: 1000, y: 150 }, { x: 1000, y: 3800 }), status: undefined });
+    const m = migrateProject(raw);
+    const st = m.levels[0].walls.map((w) => w.status);
+    expect(st.filter((s) => s === 'existing')).toHaveLength(p.levels[0].walls.length);
+    expect(st[st.length - 1]).toBe('new');
+  });
+});
+
+describe('0.7 демонтируемая стена исключается из геометрии', () => {
+  it('помещения объединяются, стена не строится в 3D и не мешает прогулке, перепланировка отмечена', () => {
+    const p = createDemoProject();
+    const l = p.levels[0];
+    const cross = l.walls.find((w) => w.a.x === 4600 && w.b.x === 4600 && w.a.y === 0)!; // несущая между гостиной и спальней
+    cross.status = 'demolish';
+    syncRooms(l, roomDefaults());
+    expect(l.rooms).toHaveLength(5);
+    expect(geomOf(l).walls.some((w) => w.id === cross.id)).toBe(false);
+    expect(geomOf(l).demolished.map((w) => w.id)).toEqual([cross.id]);
+    expect(collisionSegments(l).some((s) => s.a.x === 4600 && s.b.x === 4600 && Math.min(s.a.y, s.b.y) < 3000)).toBe(false);
+    const issues = validateProject(p).filter((i) => i.ruleId === 'apt.redevelopment');
+    expect(issues.some((i) => i.severity === 'error')).toBe(true);
+  });
+});
+
+// ───────── Дуговые стены (основа для блока 1.3) ─────────
+describe('дуговые стены: геометрия', () => {
+  const arcWall = { ...createWall({ x: 0, y: 0 }, { x: 4000, y: 0 }, { thickness: 200 }), arc: -1000 };
+  it('длина дуги, радиус, середина', () => {
+    const ai = arcInfo(arcWall)!;
+    // хорда 4000, стрела 1000 → R = 4000²/(8·1000) + 500 = 2500
+    expect(ai.radius).toBeCloseTo(2500, 6);
+    expect(ai.length).toBeCloseTo(2 * 2500 * Math.asin(2000 / 2500), 3);
+    expect(wallLen(arcWall)).toBeCloseTo(ai.length, 6);
+    const m = arcMid(arcWall);
+    expect(m.x).toBeCloseTo(2000, 3);
+    expect(m.y).toBeCloseTo(-1000, 3); // сторона L у стены вдоль +x — это +y; стрела −1000 → выгиб в −y
+    expect(pointAlong(arcWall, 0)).toEqual({ x: expect.closeTo(0, 6), y: expect.closeTo(0, 6) });
+    expect(pointAlong(arcWall, ai.length).x).toBeCloseTo(4000, 4);
+    expect(arcInfo({ ...arcWall, arc: 0 })).toBeNull();
+    expect(wallLen({ ...arcWall, arc: undefined })).toBe(4000);
+  });
+  it('комната с дуговой стеной: помещение замкнуто, площадь больше прямоугольника на сегмент круга', () => {
+    const l = createDemoProject().levels[0];
+    l.walls = [arcWall, createWall({ x: 4000, y: 0 }, { x: 4000, y: 3000 }, { thickness: 200 }), createWall({ x: 4000, y: 3000 }, { x: 0, y: 3000 }, { thickness: 200 }), createWall({ x: 0, y: 3000 }, { x: 0, y: 0 }, { thickness: 200 })];
+    l.openings = [];
+    l.items = [];
+    const g = geomOf(l);
+    expect(g.walls.length).toBeGreaterThan(8);
+    expect(g.walls.filter((w) => baseWallId(w.id) === arcWall.id).length).toBe(g.walls.length - 3);
+    const { rooms } = detectRooms(g.walls);
+    expect(rooms).toHaveLength(1);
+    const rect = 3.8 * 2.8;
+    // сегмент круга R=2500 (ось), хорда 4000: площадь ≈ R²·(φ − sin φ)/2
+    const phi = 2 * Math.asin(2000 / 2500);
+    const seg = (2.5 * 2.5 * (phi - Math.sin(phi))) / 2;
+    expect(rooms[0].areaMm2 / 1e6).toBeGreaterThan(rect + seg * 0.8);
+    expect(rooms[0].areaMm2 / 1e6).toBeLessThan(rect + seg * 1.1);
+  });
+  it('проём на дуге занимает ровно один сегмент; поверхности помещения ссылаются на исходную стену', () => {
+    const l = createDemoProject().levels[0];
+    l.walls = [arcWall, createWall({ x: 4000, y: 0 }, { x: 4000, y: 3000 }, { thickness: 200 }), createWall({ x: 4000, y: 3000 }, { x: 0, y: 3000 }, { thickness: 200 }), createWall({ x: 0, y: 3000 }, { x: 0, y: 0 }, { thickness: 200 })];
+    l.items = [];
+    l.openings = [createOpening(arcWall.id, 'window', wallLen(arcWall) / 2, { width: 1200 })];
+    const g = geomOf(l);
+    expect(g.openings).toHaveLength(1);
+    const seg = g.walls.find((w) => w.id === g.openings[0].wallId)!;
+    const chord = Math.hypot(seg.b.x - seg.a.x, seg.b.y - seg.a.y);
+    expect(g.openings[0].width).toBeCloseTo(chord, 6);
+    expect(chord).toBeGreaterThan(1150);
+    expect(chord).toBeLessThanOrEqual(1200);
+    syncRooms(l, roomDefaults());
+    const surf = roomSurfaces(l, l.rooms[0]);
+    expect(surf.filter((s) => s.wallId === arcWall.id).length).toBeGreaterThan(4);
+    expect(surf.filter((s) => s.openings.length === 1)).toHaveLength(1);
+  });
+  it('поиск стены под точкой возвращает исходную стену и положение вдоль дуги', () => {
+    const l = { walls: [arcWall], openings: [] };
+    const hit = locateOnWall(l, { x: 2000, y: -950 }, 200)!;
+    expect(hit.wall.id).toBe(arcWall.id);
+    expect(Math.abs(hit.pos - wallLen(arcWall) / 2)).toBeLessThan(25);
+    expect(locateOnWall(l, { x: 2000, y: 0 }, 200)).toBeNull();
+  });
+  it('без дуг и демонтажа геометрия — те же массивы (ничего не копируется)', () => {
+    const l = createDemoProject().levels[0];
+    const g = geomOf(l);
+    expect(g.walls).toBe(l.walls);
+    expect(g.openings).toBe(l.openings);
+    expect(geomOf(l)).toBe(g);
+  });
+});
+
+// ───────── 0.8 Чертежи: внешние цепочки, марки проёмов, размеры без дублей ─────────
+import { openingMarks, outerDimChains, roomDimPrims } from '../src/draw2d/plan';
+import { buildSheet } from '../src/drawings/sheet';
+
+describe('0.8 чертежи', () => {
+  const demo = createDemoProject();
+  const l = demo.levels[0];
+  const sheet = buildSheet(demo, { kind: 'measure', levelId: l.id, paper: 'A3', landscape: true, scale: 0 });
+  const texts = sheet.prims.filter((p) => p.t === 'text') as Extract<(typeof sheet.prims)[number], { t: 'text' }>[];
+
+  it('внешние размерные цепочки: до трёх уровней на сторону (проёмы → оси → габарит)', () => {
+    const res = outerDimChains(l.walls, l.openings)!;
+    expect(res.bbox).toEqual({ minX: -150, minY: -150, maxX: 9150, maxY: 6950 });
+    const top = res.chains.filter((c) => c.side === 'top');
+    expect(top.map((c) => c.level)).toEqual([1, 2, 3]);
+    // уровень 1: края двух окон верхней стены
+    expect(top[0].ticks).toEqual([-150, 1400, 3200, 6050, 7550, 9150]);
+    // уровень 2: ось поперечной несущей стены
+    expect(top[1].ticks).toEqual([-150, 4600, 9150]);
+    // уровень 3: габарит
+    expect(top[2].ticks).toEqual([-150, 9150]);
+    const right = res.chains.filter((c) => c.side === 'right');
+    expect(right.map((c) => c.level)).toEqual([2, 3]); // на правой стене проёмов нет
+    expect(right[0].ticks).toEqual([-150, 3900, 5700, 6950]);
+  });
+  it('на обмерном плане есть габаритные размеры и сумма звеньев цепочки равна габариту', () => {
+    const vals = texts.map((t) => t.text);
+    expect(vals).toContain('9300');
+    expect(vals).toContain('7100');
+    expect(vals).toContain('1550'); // простенок до первого окна
+    expect(vals).toContain('1800'); // окно гостиной
+    const res = outerDimChains(l.walls, l.openings)!;
+    for (const c of res.chains) expect(c.ticks[c.ticks.length - 1] - c.ticks[0]).toBe(c.side === 'top' || c.side === 'bottom' ? 9300 : 7100);
+  });
+  it('размеры читаемы: шрифт размерных чисел не меньше 2 мм на бумаге', () => {
+    const dims = texts.filter((t) => /^\d{3,5}$/.test(t.text));
+    expect(dims.length).toBeGreaterThan(20);
+    const small = dims.filter((t) => t.size < 2);
+    expect(small.length / dims.length).toBeLessThan(0.15);
+    expect(Math.min(...dims.map((t) => t.size))).toBeGreaterThanOrEqual(1.6);
+  });
+  it('внутренние размеры помещений без дублей: у прямоугольной комнаты — два размера', () => {
+    const living = l.rooms.find((r) => r.type === 'living')!;
+    const prims = roomDimPrims({ ...l, rooms: [living] }, 50);
+    const nums = prims.filter((p) => p.t === 'text').map((p) => (p as { text: string }).text);
+    expect(nums.sort()).toEqual(['3650', '4350']);
+    // раньше размер ставился на каждое ребро контура
+    const all = roomDimPrims(l, 50).filter((p) => p.t === 'text').length;
+    const edges = l.rooms.reduce((s, r) => s + r.polygon.length, 0);
+    expect(all).toBeLessThan(edges * 0.6);
+  });
+  it('марки окон и дверей: одинаковые проёмы — одна марка; ведомость на листе', () => {
+    const { byId, schedule } = openingMarks(l.openings);
+    expect(byId.size).toBe(l.openings.length);
+    const marks = schedule.map((s) => s.mark);
+    expect(marks).toEqual(expect.arrayContaining(['В-1', 'В-2', 'В-3', 'Д-1', 'Д-2', 'Д-3', 'ПР-1']));
+    // две межкомнатные двери 800×2000 и две двери санузлов 700×2000
+    expect(schedule.find((s) => s.kind === 'door' && s.width === 800)!.qty).toBe(2);
+    expect(schedule.find((s) => s.kind === 'door' && s.width === 700)!.qty).toBe(2);
+    expect(schedule.reduce((s, r) => s + r.qty, 0)).toBe(l.openings.length);
+    const vals = texts.map((t) => t.text);
+    expect(vals).toContain('Відомість прорізів');
+    const m800 = schedule.find((s) => s.kind === 'door' && s.width === 800)!.mark;
+    expect(vals.filter((v) => v === m800).length).toBe(3); // 2 на плане + строка ведомости
+    expect(vals).toContain('1800×1500');
+  });
+  it('на обмерном плане нет мебели и её размеров; масштаб из стандартного ряда', () => {
+    expect([50, 75, 100]).toContain(sheet.scale);
+    const furn = buildSheet(demo, { kind: 'furniture', levelId: l.id, paper: 'A3', landscape: true, scale: 0 });
+    // у плана мебели нет внешних цепочек и ведомости проёмов, у обмерного — нет контуров мебели
+    expect(furn.prims.filter((p) => p.t === 'text').map((p) => (p as { text: string }).text)).not.toContain('Відомість прорізів');
+    expect(sheet.prims.length).toBeLessThan(furn.prims.length + 400);
+    expect(sheet.prims.filter((p) => p.t === 'circle').length).toBe(l.openings.length);
+  });
+});

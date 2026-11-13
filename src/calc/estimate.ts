@@ -6,15 +6,16 @@ import { nestCutList } from '../cabinet/nesting';
 import { wallMaterial } from '../catalog/finishes';
 import { itemDef, num, routeDef } from '../catalog/registry';
 import type { Finish, Level, LS, Project } from '../model/types';
-import { roomSurfaces, surfaceNetArea, wallLength } from '../model/walls';
+import { roomSurfaces, surfaceNetArea, wallLen } from '../model/walls';
 import { ruleValue } from '../rules';
 import { networkSummary } from './networks';
 import { isTiled, tileLayout, tileLayoutRect } from './tiles';
 import { underfloorCalc } from './underfloor';
 
-export type EstimateCategory = 'walls' | 'insulation' | 'plaster' | 'gkl' | 'paint' | 'tile' | 'flooring' | 'ceiling' | 'cable' | 'pipes' | 'devices' | 'furniture';
+export type EstimateCategory = 'demolition' | 'walls' | 'insulation' | 'plaster' | 'gkl' | 'paint' | 'tile' | 'flooring' | 'ceiling' | 'cable' | 'pipes' | 'devices' | 'furniture';
 
 export const CATEGORY_NAMES: Record<EstimateCategory, LS> = {
+  demolition: { uk: 'Демонтаж', ru: 'Демонтаж' },
   walls: { uk: 'Стіни та перегородки', ru: 'Стены и перегородки' },
   insulation: { uk: 'Утеплення', ru: 'Утепление' },
   plaster: { uk: 'Штукатурка', ru: 'Штукатурка' },
@@ -30,6 +31,7 @@ export const CATEGORY_NAMES: Record<EstimateCategory, LS> = {
 };
 
 export const DEFAULT_RESERVE: Record<EstimateCategory, number> = {
+  demolition: 0,
   walls: 5,
   insulation: 5,
   plaster: 10,
@@ -95,7 +97,7 @@ export function wallNetArea(level: Level, wallId: string): number {
   const w = level.walls.find((x) => x.id === wallId);
   if (!w) return 0;
   const H = w.height ?? level.height;
-  let a = wallLength(w) * H;
+  let a = wallLen(w) * H;
   for (const o of level.openings) {
     if (o.wallId !== wallId) continue;
     a -= o.width * Math.max(0, Math.min(H, o.sill + o.height) - o.sill);
@@ -121,6 +123,15 @@ export function buildEstimate(p: Project): EstimateLine[] {
       const volM3 = areaM2 * (w.thickness / 1000);
       const mat = wallMaterial(w.material);
       const tk = w.thickness;
+      const status = w.status ?? 'new';
+      if (status === 'demolish') {
+        // демонтаж — отдельный раздел: площадь по материалу и объём строительного мусора
+        add(`demo.wall.${mat.id}.${tk}`, 'demolition', L(`Демонтаж стін: ${mat.name.uk}, ${tk} мм`, `Демонтаж стен: ${mat.name.ru}, ${tk} мм`), U.m2, areaM2, 'dec');
+        add('demo.waste', 'demolition', L('Будівельне сміття від демонтажу стін', 'Строительный мусор от демонтажа стен'), U.m3, volM3 * 1.3, 'dec', L('з коефіцієнтом розпушення 1,3', 'с коэффициентом разрыхления 1,3'));
+        continue;
+      }
+      // материалы кладки считаются только для новых стен
+      if (status === 'existing') continue;
       switch (mat.estimate) {
         case 'aerated': {
           const blockVol = 0.6 * 0.2 * (tk / 1000);
@@ -142,7 +153,7 @@ export function buildEstimate(p: Project): EstimateLine[] {
           add('wall.concrete', 'walls', L('Бетон (залізобетонні стіни)', 'Бетон (железобетонные стены)'), U.m3, volM3, 'dec');
           break;
         case 'gkl': {
-          const lenM = wallLength(w) / 1000;
+          const lenM = wallLen(w) / 1000;
           const hM = (w.height ?? lvl.height) / 1000;
           add('gkl.sheet', 'gkl', L('Гіпсокартон 12,5 мм 1200×2500', 'Гипсокартон 12,5 мм 1200×2500'), U.sheet, (areaM2 * 2) / GKL_SHEET_M2, 'int');
           add('gkl.cw', 'gkl', L('Профіль стійковий CW', 'Профиль стоечный CW'), U.m, (Math.ceil(lenM / 0.6) + 1) * hM, 'int');
@@ -200,7 +211,13 @@ export function buildEstimate(p: Project): EstimateLine[] {
     // ── Приборы ──
     for (const it of lvl.items) {
       const def = itemDef(it.kind);
-      if (!def || def.layer === 'furniture' || def.layer === 'landscape' || def.layer === 'gas') continue;
+      if (!def || def.layer === 'landscape' || def.layer === 'gas') continue;
+      if (it.status === 'demolish') {
+        add(`demo.item.${it.kind}`, 'demolition', L(`Демонтаж: ${def.name.uk}`, `Демонтаж: ${def.name.ru}`), U.pcs, 1, 'int');
+        continue;
+      }
+      // существующие приборы не закупаются; мебель в смету материалов не входит
+      if (def.layer === 'furniture' || it.status === 'existing') continue;
       if (it.kind === 'ht-radiator') add('dev.radiator.sections', 'devices', L('Радіатор, секцій', 'Радиатор, секций'), U.pcs, num(it.params, 'sections', 8), 'int');
       const n = it.kind === 'el-socket' ? Math.max(1, num(it.params, 'count', 1)) : 1;
       add(`dev.${it.kind}`, 'devices', def.name, U.pcs, n, 'int');

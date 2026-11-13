@@ -7,6 +7,7 @@ import { loadPdfFonts, sheetsToPdf } from '../drawings/pdf';
 import { buildSheet } from '../drawings/sheet';
 import type { SheetSpec } from '../drawings/sheet';
 import type { Lang, LayerId, Level, Project } from '../model/types';
+import { geomOf } from '../model/walls';
 import { projectToFile } from '../store/persistence';
 import { download, safeName } from './csv';
 
@@ -19,10 +20,11 @@ export async function exportPdf(p: Project, specs: SheetSpec[], lang: Lang, file
 
 /** DXF-слои плана этажа в мм модели. */
 export function planDxfLayers(p: Project, level: Level, k = 50): DxfLayer[] {
-  const layers: DxfLayer[] = [{ name: 'WALLS', color: 7, prims: wallsPrims(level.walls, level.openings, true) }];
+  const gm = geomOf(level);
+  const layers: DxfLayer[] = [{ name: 'WALLS', color: 7, prims: wallsPrims(gm.walls, gm.openings, true) }];
   const ops: DxfLayer = { name: 'OPENINGS', color: 4, prims: [] };
-  for (const o of level.openings) {
-    const w = level.walls.find((x) => x.id === o.wallId);
+  for (const o of gm.openings) {
+    const w = gm.walls.find((x) => x.id === o.wallId);
     if (w) ops.prims.push(...openingPrims(o, w));
   }
   layers.push(ops);

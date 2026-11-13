@@ -123,6 +123,38 @@ const fs = require('fs');
   check('0.3 раскрой учитывает направление текстуры: полки «поперёк» уложены с поворотом', n2.rot >= 4, JSON.stringify(n2));
   await page.click('.dialog.full footer >> text=Закрити');
 
+  // ── 0.7 статусы стен и смета ──
+  await page.click('[data-view="2d"]');
+  await page.waitForTimeout(300);
+  await page.keyboard.press('Home');
+  await page.waitForTimeout(200);
+  await clickWorld(page, 3400, 6000); // перегородка кухня/прихожая
+  s = await state(page);
+  check('0.7 стена выделена', s.sel?.type === 'wall');
+  const stSel = page.locator('.right-panel label.field', { hasText: 'Статус' }).locator('select');
+  check('0.7 существующая стена квартиры по умолчанию «існуюче»', (await stSel.inputValue()) === 'existing');
+  await stSel.selectOption('demolish');
+  s = await state(page);
+  check('0.7 демонтаж перегородки объединяет кухню и прихожую', s.rooms.length === 5, `${s.rooms.length} помещений`);
+  await page.click('.topbar >> text=Кошторис');
+  await page.waitForSelector('[data-table="estimate"]');
+  const est = await page.evaluate(() => ({ cats: [...document.querySelectorAll('[data-table="estimate"] tr[data-category]')].map((e) => e.dataset.category), demo: [...document.querySelectorAll('[data-table="estimate"] tr[data-line^="demo."]')].map((e) => e.innerText.replace(/\s+/g, ' ').trim()) }));
+  check('0.7 смета: раздел «Демонтаж» отдельно, материалы кладки существующих стен не считаются', est.cats[0] === 'demolition' && !est.cats.includes('walls') && est.demo.some((r) => /Демонтаж стін: Цегла, 120 мм/.test(r)), est.demo.join(' | ').slice(0, 160));
+  await page.click('.dialog footer >> text=Закрити');
+  await page.screenshot({ path: path.join(out, '56-demolish.png') });
+  await page.keyboard.press('Control+KeyZ');
+
+  // ── 0.8 чертежи: внешние цепочки, марки, ведомость ──
+  await page.click('.topbar >> text=Креслення');
+  await page.waitForSelector('[data-sheet-preview]');
+  const sheetTexts = await page.$$eval('[data-sheet-preview] text', (els) => els.map((e) => ({ t: e.textContent, size: Number(e.getAttribute('font-size')) })));
+  const vals = sheetTexts.map((x) => x.t);
+  const dimSizes = sheetTexts.filter((x) => /^\d{3,5}$/.test(x.t)).map((x) => x.size);
+  check('0.8 обмерный план: габаритные размеры и цепочки по проёмам', vals.includes('9300') && vals.includes('7100') && vals.includes('1550') && vals.includes('4750'));
+  check('0.8 марки окон и дверей и ведомость проёмов', vals.includes('В-1') && vals.includes('Д-1') && vals.includes('ПР-1') && vals.includes('Відомість прорізів') && vals.includes('1800×1500'));
+  check('0.8 размерные числа читаемы (не меньше 2 мм на бумаге)', dimSizes.length > 20 && dimSizes.filter((x) => x < 2).length / dimSizes.length < 0.15, `мин. ${Math.min(...dimSizes)} мм, всего ${dimSizes.length}`);
+  await page.click('.dialog footer >> text=Закрити');
+
   check('нет ошибок в консоли', errors.length === 0, errors.slice(0, 5).join(' | '));
   await browser.close();
 })().catch((e) => {

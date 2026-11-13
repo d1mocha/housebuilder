@@ -5,7 +5,7 @@ import type { Prim2, Style } from '../draw2d/prims';
 import { line, poly, rect, text } from '../draw2d/prims';
 import { bbox, cross, dot, norm, pointInPolygon, projectT, rotate, sub } from '../model/geometry';
 import type { Lang, Level, Project, Room, Vec2 } from '../model/types';
-import { detectRooms, roomSurfaces, wallDir, wallLength } from '../model/walls';
+import { detectRooms, geomOf, roomSurfaces, wallDir, wallLength } from '../model/walls';
 import { isTiled } from '../calc/tiles';
 
 const THIN: Style = { stroke: '#111827', w: 0.18 };
@@ -111,7 +111,8 @@ export function sectionPrims(p: Project, axis: 'x' | 'y', pos: number, N: number
   let top = 0;
   for (const lvl of p.levels) {
     const e = lvl.elevation;
-    const outline = detectRooms(lvl.walls).outline.flat();
+    const gm = geomOf(lvl);
+    const outline = detectRooms(gm.walls).outline.flat();
     if (!outline.length) continue;
     const ob = bbox(outline);
     const o0 = axis === 'y' ? ob.minX : ob.minY;
@@ -123,7 +124,7 @@ export function sectionPrims(p: Project, axis: 'x' | 'y', pos: number, N: number
     const below = e === 0 ? 200 : lvl.slab;
     out.push(rect(o0, -e, o1 - o0, below, { stroke: '#111827', w: 0.35, fill: '#c4c9d1' }));
     out.push(rect(o0, -(e + lvl.height + lvl.slab), o1 - o0, lvl.slab, { stroke: '#111827', w: 0.35, fill: '#c4c9d1' }));
-    for (const w of lvl.walls) {
+    for (const w of gm.walls) {
       const ca = Cc(w.a);
       const cb = Cc(w.b);
       if ((ca - c) * (cb - c) > 0 || Math.abs(ca - cb) < 1) continue;
@@ -134,7 +135,7 @@ export function sectionPrims(p: Project, axis: 'x' | 'y', pos: number, N: number
       const tw = w.thickness / Math.max(0.2, sin);
       const wh = w.height ?? lvl.height;
       const along = t * wallLength(w);
-      const op = lvl.openings.find((o) => o.wallId === w.id && Math.abs(o.pos - along) < o.width / 2);
+      const op = gm.openings.find((o) => o.wallId === w.id && Math.abs(o.pos - along) < o.width / 2);
       if (op) {
         const ot = Math.min(wh, op.sill + op.height);
         if (op.sill > 0) out.push(rect(h - tw / 2, -(e + op.sill), tw, op.sill, CUT));
@@ -191,7 +192,8 @@ export function facadePrims(p: Project, N: number, lang: Lang): Prim2[] {
     const faces: { depth: number; prims: Prim2[] }[] = [];
     for (const lvl of p.levels) {
       const e = lvl.elevation;
-      for (const w of lvl.walls) {
+      const gm = geomOf(lvl);
+      for (const w of gm.walls) {
         const a = v.h(w.a);
         const b = v.h(w.b);
         const lo = Math.min(a, b);
@@ -204,7 +206,7 @@ export function facadePrims(p: Project, N: number, lang: Lang): Prim2[] {
         const wh = w.height ?? lvl.height;
         const prims: Prim2[] = [rect(lo - half, -(e + wh + lvl.slab), hi - lo + 2 * half, wh + lvl.slab + (e === 0 ? 0 : 0), { stroke: '#111827', w: 0.35, fill: '#f8f6f1' })];
         if (facingWall) {
-          for (const o of lvl.openings.filter((x) => x.wallId === w.id)) {
+          for (const o of gm.openings.filter((x) => x.wallId === w.id)) {
             const t = o.pos / Math.max(1, wallLength(w));
             const hc = a + (b - a) * t;
             const ot = Math.min(wh, o.sill + o.height);

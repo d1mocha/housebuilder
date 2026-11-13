@@ -13,6 +13,7 @@ export function snapshotBaseline(p: Project): BaselineWall[] {
   const out: BaselineWall[] = [];
   for (const l of p.levels) {
     for (const w of l.walls) {
+      if (w.status === 'demolish') continue;
       out.push({
         id: w.id,
         a: { ...w.a },
@@ -229,6 +230,9 @@ export function createDemoProject(): Project {
   // страховка: в демо не должно остаться объектов вне помещений
   const outside = new Set(itemsOutsideRooms(lvl).map((it) => it.id));
   if (outside.size) lvl.items = lvl.items.filter((it) => !outside.has(it.id));
+  // существующее состояние: стены и то, что уже есть в квартире (радиаторы, стояки, вентрешётки)
+  for (const w of lvl.walls) w.status = 'existing';
+  for (const it of lvl.items) if (['ht-radiator', 'pl-riser', 'vt-exhaust'].includes(it.kind)) it.status = 'existing';
   p.baseline = snapshotBaseline(p);
   p.stamp = { object: 'Квартира двокімнатна', address: 'м. Київ', author: '', customer: '' };
   return p;

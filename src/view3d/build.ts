@@ -9,7 +9,7 @@ import type { Mat3, Prim3 } from '../catalog/registry';
 import { itemSize } from '../draw2d/plan';
 import { add, bbox, dist, mul, norm, perp, sub } from '../model/geometry';
 import type { Finish, Item, Level, Opening, Project, Room, Route, Sel, Vec2, Wall, Zone } from '../model/types';
-import { detectRooms, wallDir, wallLength, wallPolygon } from '../model/walls';
+import { baseWallId, detectRooms, geomOf, wallDir, wallLength, wallPolygon } from '../model/walls';
 import { finishMaterial, partMaterial } from './materials';
 
 const MM = 0.001;
@@ -193,19 +193,20 @@ export function buildOpeningObject(o: Opening, wall: Wall, H: number): THREE.Gro
 export function buildWalls(project: Project, level: Level): THREE.Group {
   const g = new THREE.Group();
   g.name = 'walls';
-  for (const w of level.walls) {
+  const gm = geomOf(level);
+  for (const w of gm.walls) {
     if (wallLength(w) < 1) continue;
     const H = w.height ?? level.height;
-    const geo = buildWallGeometry(w, level.walls, level.openings, H);
+    const geo = buildWallGeometry(w, gm.walls, gm.openings, H);
     const mats = [finishMaterial(finishOf(project, w.finishL), 'wall'), finishMaterial(finishOf(project, w.finishR), 'wall'), partMaterial(wallMaterial(w.material).estimate === 'gkl' ? '#e5e7eb' : '#d9d5cd')];
     const mesh = new THREE.Mesh(geo, mats);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
-    mesh.userData.sel = { type: 'wall', id: w.id, scope: level.id } satisfies Sel;
+    mesh.userData.sel = { type: 'wall', id: baseWallId(w.id), scope: level.id } satisfies Sel;
     g.add(mesh);
   }
-  for (const o of level.openings) {
-    const w = level.walls.find((x) => x.id === o.wallId);
+  for (const o of gm.openings) {
+    const w = gm.walls.find((x) => x.id === o.wallId);
     if (!w) continue;
     const og = buildOpeningObject(o, w, w.height ?? level.height);
     og.traverse((c) => {
@@ -268,7 +269,7 @@ export function buildFloors(project: Project, level: Level, withCeiling: boolean
       g.add(ceil);
     }
   }
-  const { outline } = detectRooms(level.walls);
+  const { outline } = detectRooms(geomOf(level).walls);
   const slabMat = partMaterial('#8f9399');
   for (const o of outline) {
     if (o.length < 3) continue;
@@ -445,7 +446,7 @@ export function buildZoneObject(zone: Zone, baseY = 0): THREE.Group | null {
 export function buildRoof(project: Project): THREE.Group | null {
   const top = project.levels[project.levels.length - 1];
   if (!top || project.roof.type === 'none') return null;
-  const { outline } = detectRooms(top.walls);
+  const { outline } = detectRooms(geomOf(top).walls);
   const pts = outline.flat();
   if (pts.length < 3) return null;
   const bb = bbox(pts);
@@ -600,11 +601,12 @@ export function buildProjectGroup(project: Project): THREE.Group {
 /** Сплошные отрезки стен для коллизий прогулки: [a, b, полутолщина] в мм. */
 export function collisionSegments(level: Level): { a: Vec2; b: Vec2; h: number }[] {
   const out: { a: Vec2; b: Vec2; h: number }[] = [];
-  for (const w of level.walls) {
+  const gm = geomOf(level);
+  for (const w of gm.walls) {
     const L = wallLength(w);
     if (L < 1) continue;
     const dir = norm(sub(w.b, w.a));
-    const gaps = level.openings
+    const gaps = gm.openings
       .filter((o) => o.wallId === w.id && o.kind !== 'window')
       .map((o) => [o.pos - o.width / 2, o.pos + o.width / 2])
       .sort((p, q) => p[0] - q[0]);

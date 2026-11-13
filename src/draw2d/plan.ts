@@ -12,6 +12,9 @@ import { snakePath } from '../calc/underfloor';
 export const COL = {
   wallBearing: '#3d4756',
   wall: '#a3acb8',
+  wallNew: '#e2b77c',
+  wallNewBearing: '#b0722a',
+  demolish: '#dc2626',
   wallStroke: '#1f2937',
   opening: '#1f2937',
   room: '#334155',
@@ -44,9 +47,13 @@ export function wallsPrims(walls: Wall[], openings: Opening[], mono = false): Pr
     const w = byId.get(o.wallId);
     if (w) cuts.push(openingGeom(o, w).quad);
   }
+  // существующие стены — серые, новые — тёплого тона (на чертежах — светлее), несущие темнее перегородок
+  const isNew = (w: Wall) => (w.status ?? 'new') === 'new';
   const groups: [Wall[], string][] = [
-    [walls.filter((w) => !w.loadBearing), mono ? '#c9cdd3' : COL.wall],
-    [walls.filter((w) => w.loadBearing), mono ? '#555b66' : COL.wallBearing],
+    [walls.filter((w) => !w.loadBearing && !isNew(w)), mono ? '#c9cdd3' : COL.wall],
+    [walls.filter((w) => !w.loadBearing && isNew(w)), mono ? '#e8dcc6' : COL.wallNew],
+    [walls.filter((w) => w.loadBearing && !isNew(w)), mono ? '#555b66' : COL.wallBearing],
+    [walls.filter((w) => w.loadBearing && isNew(w)), mono ? '#a08a63' : COL.wallNewBearing],
   ];
   for (const [group, fill] of groups) {
     if (!group.length) continue;
@@ -54,6 +61,11 @@ export function wallsPrims(walls: Wall[], openings: Opening[], mono = false): Pr
     for (const p of mp) out.push({ t: 'path', rings: p.map(fromRing), s: { fill, stroke: COL.wallStroke, w: 0.35 } });
   }
   return out;
+}
+
+/** Стены под демонтаж: пунктирный красный контур с бледной заливкой. */
+export function demolishedPrims(walls: Wall[]): Prim2[] {
+  return walls.map((w) => poly(wallPolygon(w, [w]), true, { fill: '#fee2e2', stroke: COL.demolish, w: 0.35, dash: [2, 1.2], opacity: 0.85 }));
 }
 
 // ───────── Проёмы ─────────
@@ -285,7 +297,7 @@ export function zonePrims(zone: Zone, k: number, label?: string): Prim2[] {
 
 // ───────── Размеры ─────────
 
-export function dimPrims(a: Vec2, b: Vec2, offset: number, k: number, label?: string, color = COL.dim): Prim2[] {
+export function dimPrims(a: Vec2, b: Vec2, offset: number, k: number, label?: string, color = COL.dim, size = 2.2): Prim2[] {
   const L = dist(a, b);
   if (L < 1) return [];
   const d = norm(sub(b, a));
@@ -310,29 +322,17 @@ export function dimPrims(a: Vec2, b: Vec2, offset: number, k: number, label?: st
   }
   // текст над линией (со стороны «верха» повернутого текста)
   const m = mid(a2, b2);
-  const tp = add(m, mul(up, 1.1 * k));
-  out.push(text(tp.x, tp.y, label ?? String(Math.round(L)), 2.2, { rot: ang, color, halo: true }));
+  const tp = add(m, mul(up, (0.5 + size * 0.3) * k));
+  // короткий размер: текст выносится за линию, чтобы не сливаться с засечками
+  out.push(text(tp.x, tp.y, label ?? String(Math.round(L)), L < size * 2.6 * k ? Math.max(1.6, size * 0.8) : size, { rot: ang, color, halo: true }));
   return out;
 }
 
 export const dimEntityPrims = (dm: Dim, k: number): Prim2[] => dimPrims(dm.a, dm.b, dm.offset, k);
 
-/** Авторазмеры: внутренние размеры по рёбрам контура каждого помещения. */
+/** Авторазмеры редактора: внутренние размеры помещений без дублей. */
 export function autoDimPrims(level: Level, k: number, color = '#64748b'): Prim2[] {
-  const out: Prim2[] = [];
-  for (const r of level.rooms) {
-    const c = centroid(r.polygon);
-    for (let i = 0; i < r.polygon.length; i++) {
-      const a = r.polygon[i];
-      const b = r.polygon[(i + 1) % r.polygon.length];
-      if (dist(a, b) < 300) continue;
-      // вынос внутрь помещения
-      const n = perp(norm(sub(b, a)));
-      const inward = (c.x - a.x) * n.x + (c.y - a.y) * n.y > 0 ? 1 : -1;
-      out.push(...dimPrims(a, b, inward * 4.5 * k, k, undefined, color));
-    }
-  }
-  return out;
+  return roomDimPrims(level, k, color, 2.2);
 }
 
 // ───────── Участок ─────────
@@ -365,3 +365,173 @@ export function northArrowPrims(x: number, y: number, north: number, k: number):
 }
 
 export const routeLength = (r: Route): number => polylineLength(r.points);
+
+// ───────── Размеры для чертежей: внутренние без дублей, внешние цепочки, марки проёмов ─────────
+
+/**
+ * Внутренние размеры помещений без дублей: для каждого направления и длины ребра — одна размерная линия
+ * (у прямоугольной комнаты получается две: ширина и глубина).
+ */
+export function roomDimPrims(level: Level, k: number, color = '#1f2937', size = 2.5): Prim2[] {
+  const out: Prim2[] = [];
+  for (const r of level.rooms) {
+    const c = centroid(r.polygon);
+    const seen = new Set<string>();
+    const edges = r.polygon
+      .map((a, i) => ({ a, b: r.polygon[(i + 1) % r.polygon.length] }))
+      .map((e) => ({ ...e, len: dist(e.a, e.b) }))
+      .filter((e) => e.len >= 500)
+      .sort((p, q) => q.len - p.len);
+    for (const e of edges) {
+      const ang = Math.round(angleDeg(sub(e.b, e.a)) % 180);
+      const key = `${ang}|${Math.round(e.len / 10)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const n = perp(norm(sub(e.b, e.a)));
+      const inward = (c.x - e.a.x) * n.x + (c.y - e.a.y) * n.y > 0 ? 1 : -1;
+      out.push(...dimPrims(e.a, e.b, inward * 5 * k, k, undefined, color, size));
+    }
+  }
+  return out;
+}
+
+export interface DimChain {
+  side: 'top' | 'bottom' | 'left' | 'right';
+  /** 1 — проёмы и простенки, 2 — оси поперечных стен, 3 — габарит. */
+  level: 1 | 2 | 3;
+  /** Координаты засечек вдоль стороны (x для top/bottom, y для left/right), по возрастанию. */
+  ticks: number[];
+}
+
+/** Внешние размерные цепочки по четырём сторонам здания (данные). */
+export function outerDimChains(walls: Wall[], openings: Opening[]): { chains: DimChain[]; bbox: { minX: number; minY: number; maxX: number; maxY: number } } | null {
+  if (!walls.length) return null;
+  const pts = walls.flatMap((w) => wallPolygon(w, walls));
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of pts) {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  const bb = { minX, minY, maxX, maxY };
+  const chains: DimChain[] = [];
+  const uniq = (xs: number[]) => {
+    const s = [...xs].sort((a, b) => a - b);
+    return s.filter((x, i) => i === 0 || x - s[i - 1] > 40);
+  };
+  const sides: { side: DimChain['side']; horizontal: boolean; edge: number; lo: number; hi: number }[] = [
+    { side: 'top', horizontal: true, edge: minY, lo: minX, hi: maxX },
+    { side: 'bottom', horizontal: true, edge: maxY, lo: minX, hi: maxX },
+    { side: 'left', horizontal: false, edge: minX, lo: minY, hi: maxY },
+    { side: 'right', horizontal: false, edge: maxX, lo: minY, hi: maxY },
+  ];
+  for (const s of sides) {
+    const along = (p: Vec2) => (s.horizontal ? p.x : p.y);
+    const across = (p: Vec2) => (s.horizontal ? p.y : p.x);
+    // стены, образующие эту сторону: параллельны ей и лежат у края габарита
+    const edgeWalls = walls.filter((w) => {
+      const d = norm(sub(w.b, w.a));
+      const par = Math.abs(s.horizontal ? d.y : d.x) < 0.05;
+      return par && Math.abs(across(w.a) - s.edge) <= w.thickness / 2 + 60;
+    });
+    const edgeIds = new Set(edgeWalls.map((w) => w.id));
+    // уровень 1: края проёмов в стенах этой стороны
+    const l1: number[] = [];
+    for (const o of openings) {
+      if (!edgeIds.has(o.wallId)) continue;
+      const w = edgeWalls.find((x) => x.id === o.wallId)!;
+      const g = openingGeom(o, w);
+      l1.push(along(g.p1), along(g.p2));
+    }
+    // уровень 2: оси поперечных стен, примыкающих к этой стороне
+    const l2: number[] = [];
+    for (const w of walls) {
+      const d = norm(sub(w.b, w.a));
+      const perpToSide = Math.abs(s.horizontal ? d.x : d.y) < 0.05;
+      if (!perpToSide) continue;
+      const touches = Math.min(Math.abs(across(w.a) - s.edge), Math.abs(across(w.b) - s.edge)) <= 500;
+      if (!touches) continue;
+      const pos = along(w.a);
+      // торцевые стены самой стороны в цепочку осей не входят — их закрывает габарит
+      if (pos > s.lo + w.thickness + 60 && pos < s.hi - w.thickness - 60) l2.push(pos);
+    }
+    if (l1.length) chains.push({ side: s.side, level: 1, ticks: uniq([s.lo, ...l1, s.hi]) });
+    if (l2.length) chains.push({ side: s.side, level: 2, ticks: uniq([s.lo, ...l2, s.hi]) });
+    chains.push({ side: s.side, level: 3, ticks: [s.lo, s.hi] });
+  }
+  return { chains, bbox: bb };
+}
+
+/** Примитивы внешних цепочек: уровни идут подряд без пропусков (ближний — проёмы, дальний — габарит). */
+export function outerDimPrims(walls: Wall[], openings: Opening[], k: number, color = '#1f2937', size = 2.5): Prim2[] {
+  const res = outerDimChains(walls, openings);
+  if (!res) return [];
+  const out: Prim2[] = [];
+  const { bbox: bb } = res;
+  const step = 7 * k;
+  for (const side of ['top', 'bottom', 'left', 'right'] as const) {
+    const list = res.chains.filter((c) => c.side === side).sort((a, b) => a.level - b.level);
+    list.forEach((c, row) => {
+      const off = 9 * k + row * step;
+      for (let i = 1; i < c.ticks.length; i++) {
+        const t0 = c.ticks[i - 1];
+        const t1 = c.ticks[i];
+        if (side === 'top') out.push(...dimPrims({ x: t0, y: bb.minY }, { x: t1, y: bb.minY }, -off, k, undefined, color, size));
+        else if (side === 'bottom') out.push(...dimPrims({ x: t0, y: bb.maxY }, { x: t1, y: bb.maxY }, off, k, undefined, color, size));
+        else if (side === 'left') out.push(...dimPrims({ x: bb.minX, y: t0 }, { x: bb.minX, y: t1 }, off, k, undefined, color, size));
+        else out.push(...dimPrims({ x: bb.maxX, y: t0 }, { x: bb.maxX, y: t1 }, -off, k, undefined, color, size));
+      }
+    });
+  }
+  return out;
+}
+
+export interface OpeningMark {
+  mark: string;
+  kind: Opening['kind'];
+  width: number;
+  height: number;
+  sill: number;
+  style: Opening['style'];
+  qty: number;
+}
+
+/** Марки проёмов: одинаковые по типу и размерам получают одну марку (В-1, Д-1, ПР-1…). */
+export function openingMarks(openings: Opening[]): { byId: Map<string, string>; schedule: OpeningMark[] } {
+  const byId = new Map<string, string>();
+  const schedule: OpeningMark[] = [];
+  const prefix = { window: 'В', door: 'Д', portal: 'ПР' } as const;
+  const counters = { window: 0, door: 0, portal: 0 };
+  const keys = new Map<string, OpeningMark>();
+  const sorted = [...openings].sort((a, b) => prefix[a.kind].localeCompare(prefix[b.kind]) || b.width - a.width || b.height - a.height);
+  for (const o of sorted) {
+    const key = `${o.kind}|${Math.round(o.width)}|${Math.round(o.height)}|${o.kind === 'window' ? Math.round(o.sill) : 0}|${o.kind === 'door' ? o.style : ''}`;
+    let m = keys.get(key);
+    if (!m) {
+      counters[o.kind] += 1;
+      m = { mark: `${prefix[o.kind]}-${counters[o.kind]}`, kind: o.kind, width: Math.round(o.width), height: Math.round(o.height), sill: Math.round(o.sill), style: o.style, qty: 0 };
+      keys.set(key, m);
+      schedule.push(m);
+    }
+    m.qty += 1;
+    byId.set(o.id, m.mark);
+  }
+  return { byId, schedule };
+}
+
+/** Подпись марки у проёма: окно — снаружи здания, дверь — со стороны, противоположной открыванию. */
+export function openingMarkPrims(o: Opening, wall: Wall, mark: string, k: number, center: Vec2): Prim2[] {
+  const g = openingGeom(o, wall);
+  let side = o.kind === 'door' ? (o.swing === 'L' ? -1 : 1) : 1;
+  if (o.kind !== 'door') {
+    // наружу: от центра здания
+    const toCenter = (center.x - g.center.x) * g.normal.x + (center.y - g.center.y) * g.normal.y;
+    side = toCenter > 0 ? -1 : 1;
+  }
+  const p = add(g.center, mul(g.normal, side * (wall.thickness / 2 + 3.2 * k)));
+  return [circle(p.x, p.y, 2.6 * k, { stroke: '#111827', w: 0.18, fill: '#ffffff' }), text(p.x, p.y, mark, 1.9, { bold: true })];
+}

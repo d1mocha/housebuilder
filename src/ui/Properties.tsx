@@ -12,8 +12,8 @@ import { snapshotBaseline } from '../model/demo';
 import { createLevel } from '../model/defaults';
 import { add, dist, mul, norm, polygonArea, polylineLength, sub } from '../model/geometry';
 import { duplicateEntity, findEntity, getContainer, getLevel, removeEntity } from '../model/ops';
-import type { Dim, Finish, Item, Level, Opening, Params, ParamValue, Project, Room, Route, Sel, Wall, Zone } from '../model/types';
-import { clampOpeningPos, roomSurfaces, surfaceNetArea, wallLength } from '../model/walls';
+import type { Dim, ElementStatus, Finish, Item, Level, Opening, Params, ParamValue, Project, Room, Route, Sel, Wall, Zone } from '../model/types';
+import { clampOpeningPos, roomSurfaces, surfaceNetArea, wallLen, wallLength } from '../model/walls';
 import { ruleValue } from '../rules';
 import { useProject } from '../store/projectStore';
 import { useUi } from '../store/uiStore';
@@ -45,6 +45,24 @@ function FinishSelect({ label, value, target, onChange, project }: { label: stri
   const { ls } = useT();
   const opts = project.finishes.filter((f) => f.target.includes(target) || f.id === value).map((f) => ({ value: f.id, label: ls(f.name) }));
   return <Select label={label} value={value} options={opts} onChange={onChange} />;
+}
+
+const STATUS_NAMES: Record<ElementStatus, [string, string]> = {
+  existing: ['Існуюче', 'Существующее'],
+  demolish: ['Демонтаж', 'Демонтаж'],
+  new: ['Нове', 'Новое'],
+};
+
+function StatusSelect({ value, onChange }: { value: ElementStatus; onChange: (v: ElementStatus) => void }) {
+  const { t } = useT();
+  return (
+    <Select
+      label={t('Статус', 'Статус')}
+      value={value}
+      options={(Object.keys(STATUS_NAMES) as ElementStatus[]).map((k) => ({ value: k, label: t(STATUS_NAMES[k][0], STATUS_NAMES[k][1]) }))}
+      onChange={(v) => onChange(v as ElementStatus)}
+    />
+  );
 }
 
 function Actions({ sel }: { sel: Sel }) {
@@ -91,7 +109,8 @@ function WallProps({ wall, sel, project }: { wall: Wall; sel: Sel; project: Proj
     <Section title={t('Стіна', 'Стена')}>
       <Num
         label={t('Довжина (по осі)', 'Длина (по оси)')}
-        value={wallLength(wall)}
+        value={wall.arc ? wallLen(wall) : wallLength(wall)}
+        disabled={!!wall.arc}
         min={50}
         unit="мм"
         digits={0}
@@ -114,6 +133,8 @@ function WallProps({ wall, sel, project }: { wall: Wall; sel: Sel; project: Proj
       />
       <Check label={t('Несуча', 'Несущая')} value={wall.loadBearing} onChange={(v) => mut((w) => (w.loadBearing = v))} />
       <Check label={t('Зовнішня', 'Наружная')} value={!!wall.exterior} onChange={(v) => mut((w) => (w.exterior = v))} />
+      <StatusSelect value={wall.status ?? 'new'} onChange={(v) => mut((w) => (w.status = v))} />
+      <Num label={t('Стріла дуги (0 — пряма)', 'Стрела дуги (0 — прямая)')} value={wall.arc ?? 0} min={-20000} max={20000} step={50} unit="мм" title={t('Додатне значення — вигин у бік L', 'Положительное значение — выгиб в сторону L')} onChange={(v) => mut((w) => (Math.abs(v) >= 1 ? (w.arc = v) : delete w.arc))} />
       <FinishSelect label={t('Оздоблення, бік L', 'Отделка, сторона L')} value={wall.finishL} target="wall" project={project} onChange={(v) => mut((w) => (w.finishL = v))} />
       <FinishSelect label={t('Оздоблення, бік R', 'Отделка, сторона R')} value={wall.finishR} target="wall" project={project} onChange={(v) => mut((w) => (w.finishR = v))} />
       <div className="grid2">
@@ -314,6 +335,7 @@ function ItemProps({ item, sel, project }: { item: Item; sel: Sel; project: Proj
         <Num label={t('Поворот', 'Поворот')} value={item.rot} step={15} digits={0} unit="°" onChange={(v) => mut((x) => (x.rot = ((v % 360) + 360) % 360))} />
         <Num label={t('Від підлоги', 'От пола')} value={item.z} step={50} digits={0} unit="мм" onChange={(v) => mut((x) => (x.z = v))} />
       </div>
+      {def && def.layer !== 'furniture' && def.layer !== 'landscape' && <StatusSelect value={item.status ?? 'new'} onChange={(v) => mut((x) => (x.status = v))} />}
       {def && item.kind !== 'cabinet' && <ParamsForm defs={def.params} params={item.params} project={project} onChange={(k, v) => mut((x) => (x.params[k] = v))} />}
       <Info label={t('Габарити Ш×Г×В', 'Габариты Ш×Г×В')} value={`${Math.round(s.w)}×${Math.round(s.d)}×${Math.round(s.h)} мм`} />
       {item.kind === 'ht-radiator' && <Info label={t('Теплова потужність', 'Тепловая мощность')} value={<b>{num(item.params, 'sections', 8) * num(item.params, 'sectionPower', 150)} Вт</b>} />}
@@ -482,13 +504,17 @@ function LevelProps({ level, project }: { level: Level; project: Project }) {
           <>
             <button
               onClick={() => {
-                upd((d) => void (d.baseline = snapshotBaseline(d)));
+                upd((d) => {
+                  // всё, что сейчас есть (кроме стен под демонтаж), — существующее состояние
+                  for (const l of d.levels) for (const w of l.walls) if (w.status !== 'demolish') w.status = 'existing';
+                  d.baseline = snapshotBaseline(d);
+                });
                 useUi.getState().notify(t('Поточні стіни зафіксовано як існуючий стан (техпаспорт)', 'Текущие стены зафиксированы как существующее состояние (техпаспорт)'));
               }}
             >
               {project.baseline ? t('Перезафіксувати існуючий стан', 'Перезафиксировать существующее состояние') : t('Зафіксувати існуючий стан (за техпаспортом)', 'Зафиксировать существующее состояние (по техпаспорту)')}
             </button>
-            <p className="hint">{t('Після фіксації застосунок попереджає про зміни несучих стін і перегородок, що потребують узаконення.', 'После фиксации приложение предупреждает об изменениях несущих стен и перегородок, требующих узаконивания.')}</p>
+            <p className="hint">{t('Усі поточні стіни стають «існуючими», нові стіни далі створюються зі статусом «нове» і потрапляють у кошторис. Після фіксації застосунок попереджає про зміни несучих стін і перегородок, що потребують узаконення.', 'Все текущие стены становятся «существующими», новые стены далее создаются со статусом «новое» и попадают в смету. После фиксации приложение предупреждает об изменениях несущих стен и перегородок, требующих узаконивания.')}</p>
           </>
         )}
       </Section>
