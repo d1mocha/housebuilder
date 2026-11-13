@@ -114,7 +114,7 @@ export function createDemoProject(): Project {
   tpl.width = 1800;
   tpl.height = 2400;
   tpl.name = 'Шафа-купе (спальня)';
-  tpl.columns = tpl.columns.slice(0, 2);
+  tpl.columns = [tpl.columns[0], tpl.columns[2]];
   tpl.facade.slidingCount = 2;
   p.cabinets.push(tpl);
 

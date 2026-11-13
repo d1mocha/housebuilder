@@ -84,6 +84,45 @@ const fs = require('fs');
   await page.screenshot({ path: path.join(out, '52-walk-start.png') });
   await page.keyboard.press('KeyF');
 
+  // ── 0.3 конструктор: шаблон «Шафа-купе» — раздвижные двери, штанга, полки, ящики нормальной высоты ──
+  await page.click('[data-view="split"]');
+  await page.click('.topbar >> text=Конструктор меблів');
+  await page.waitForSelector('.dialog.full');
+  await page.selectOption('[data-select="design"]', '');
+  await page.click('[data-template="wardrobe-sliding"]');
+  await page.waitForSelector('.cab');
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: path.join(out, '53-wardrobe-doors.png') });
+  const cab = await page.evaluate(() => {
+    const p = window.__hb.useProject.getState().project;
+    const c = p.cabinets[p.cabinets.length - 1];
+    return { type: c.facade.type, doors: c.facade.slidingCount, overlap: c.facade.slidingOverlap, profile: c.facade.slidingProfile, drawers: c.columns.map((x) => x.drawers), dh: c.columns.map((x) => x.drawerHeight), rods: c.columns.filter((x) => x.rod).length, shelves: c.columns.reduce((a, x) => a + x.shelves, 0), size: [c.width, c.height, c.depth] };
+  });
+  check('0.3 шаблон «Шафа-купе»: 2400×2600×600, раздвижные двери, штанга, полки, 1–2 ящика ≈180 мм', cab.type === 'sliding' && cab.doors >= 2 && cab.doors <= 3 && cab.overlap > 0 && cab.profile > 0 && cab.rods >= 1 && cab.shelves >= 5 && cab.drawers.reduce((a, b) => a + b, 0) <= 2 && cab.dh.every((h) => h >= 150 && h <= 200) && cab.size.join('x') === '2400x2600x600', JSON.stringify(cab));
+  await page.click('[data-cabtab="hw"]');
+  const hw = await page.$$eval('[data-table="hardware"] tbody tr', (trs) => trs.map((tr) => tr.innerText.replace(/\s+/g, ' ')));
+  check('0.3 спецификация купе: двери с перекрытием, профили, направляющие, ролики', hw.some((r) => /Двері-купе .*перекриття/.test(r)) && hw.some((r) => /Профіль вертикальний/.test(r)) && hw.some((r) => /Напрямна верхня/.test(r)) && hw.some((r) => /роликів/.test(r)));
+  await page.click('[data-cabtab="cut"]');
+  const rows = await page.$$eval('[data-table="cutlist"] tbody tr', (trs) => trs.map((tr) => [...tr.querySelectorAll('td')].map((td) => (td.querySelector('select') ? td.querySelector('select').value : td.innerText.trim()))));
+  const infill = rows.find((r) => r[1] === 'Наповнення дверей-купе');
+  const front = rows.find((r) => r[1] === 'Фасад шухляди');
+  check('0.3 деталировка: наполнение дверей (ЛДСП 10) и фасады ящиков 180 мм', infill && infill[2] === 'ldsp10' && infill[10] === '3' && front && /× 180$/.test(front[3]), JSON.stringify([infill && infill.slice(2, 4), front && front[3]]));
+  check('0.3 у детали есть параметр направления текстуры (вдоль/поперёк/без)', infill && infill[9] === 'length' && (await page.locator('[data-table="cutlist"] select[data-grain] option').first().count()) === 1);
+  const shelfRow = page.locator('[data-table="cutlist"] tbody tr', { hasText: 'Полиця' }).first();
+  await page.click('[data-cabtab="nest"]');
+  await page.waitForSelector('.sheet-card svg');
+  const nestInfo = async () => page.evaluate(() => ({ sheets: document.querySelectorAll('[data-nest="ldsp18"] .sheet-card').length, offcuts: document.querySelectorAll('[data-nest="ldsp18"] [data-offcut]').length, waste: document.querySelector('[data-nest="ldsp18"] [data-waste]').innerText, rot: [...document.querySelectorAll('[data-nest="ldsp18"] svg text')].filter((t) => t.textContent.includes('↻')).length }));
+  const n1 = await nestInfo();
+  check('0.3 раскрой: 3 листа ЛДСП 18, показаны деловые остатки и отходы', n1.sheets === 3 && n1.offcuts >= 1 && parseFloat(n1.waste.replace(',', '.')) < 20 && n1.rot === 0, JSON.stringify(n1));
+  await page.screenshot({ path: path.join(out, '54-wardrobe-nesting.png') });
+  await page.click('[data-cabtab="cut"]');
+  await shelfRow.locator('select[data-grain]').selectOption('width');
+  await page.click('[data-cabtab="nest"]');
+  await page.waitForSelector('.sheet-card svg');
+  const n2 = await nestInfo();
+  check('0.3 раскрой учитывает направление текстуры: полки «поперёк» уложены с поворотом', n2.rot >= 4, JSON.stringify(n2));
+  await page.click('.dialog.full footer >> text=Закрити');
+
   check('нет ошибок в консоли', errors.length === 0, errors.slice(0, 5).join(' | '));
   await browser.close();
 })().catch((e) => {

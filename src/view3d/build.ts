@@ -348,6 +348,10 @@ export function cabinetPrims(project: Project, designId: string): { prims: Prim3
   const prims: Prim3[] = [];
   for (const part of res.parts) {
     if (!part.box) continue;
+    if (part.role === 'slidingProfile') {
+      prims.push({ t: 'box', x: part.box.x, y: part.box.y, z: part.box.z, w: part.box.sx, d: part.box.sy, h: part.box.sz, c: '#b8bcc2', m: 'metal' });
+      continue;
+    }
     const board = project.cabinetCatalog.boards.find((b) => b.id === part.materialId);
     const isFacade = part.role === 'facade' || part.role === 'drawerFront' || part.role === 'slidingDoor';
     prims.push({ t: 'box', x: part.box.x, y: part.box.y, z: part.box.z, w: part.box.sx, d: part.box.sy, h: part.box.sz, c: isFacade && design.color ? design.color : (board?.color ?? '#cdb58a'), m: 'wood' });

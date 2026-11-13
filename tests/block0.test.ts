@@ -98,3 +98,193 @@ describe('0.5 старт прогулки', () => {
     expect(walkStart({ ...q.levels[0], rooms: [], walls: [] }, []).pos).toEqual({ x: 0, y: 0 });
   });
 });
+
+// ───────── 0.3 Конструктор: шкаф-купе, направление текстуры, раскрой ─────────
+import { defaultCabinetCatalog } from '../src/cabinet/catalog';
+import { buildCutList } from '../src/cabinet/cutlist';
+import { generateCabinet } from '../src/cabinet/generate';
+import { freeOffcuts, largestFreeRect, nest, nestCutList } from '../src/cabinet/nesting';
+import { BUILTIN_TEMPLATES, autoDrawerCount } from '../src/cabinet/templates';
+import { migrateProject } from '../src/model/migrate';
+
+describe('0.3 шаблон «Шафа-купе» — настоящий шкаф-купе', () => {
+  const cat = defaultCabinetCatalog();
+  const d = BUILTIN_TEMPLATES.find((t) => t.id === 'wardrobe-sliding')!.make();
+  const res = generateCabinet(d, cat);
+  const rows = buildCutList(res.parts, cat);
+
+  it('габарит 2400×2600×600, раздвижные двери: 3 полотна с перехлёстом', () => {
+    expect([d.width, d.height, d.depth, d.facade.type, d.facade.slidingCount]).toEqual([2400, 2600, 600, 'sliding', 3]);
+    const infill = res.parts.filter((p) => p.role === 'slidingDoor');
+    expect(infill).toHaveLength(3);
+    // дверь = (проём + перехлёст × 2) / 3; наполнение уже двери на вычет профиля
+    const doorW = (2364 + 2 * 26) / 3;
+    expect(infill[0].width).toBeCloseTo(doorW - 36, 1);
+    expect(infill[0].length).toBeCloseTo(2494 - 40 - 60, 1);
+    // соседние полотна перекрываются, стоят на разных дорожках
+    const boxes = infill.map((p) => p.box!);
+    expect(boxes[0].x + boxes[0].sx).toBeGreaterThan(boxes[1].x - 30);
+    expect(boxes[0].y).not.toBe(boxes[1].y);
+  });
+  it('профиль дверей: рамка в 3D и позиции в спецификации', () => {
+    const prof = res.parts.filter((p) => p.role === 'slidingProfile');
+    expect(prof).toHaveLength(12);
+    expect(prof.every((p) => p.virtual)).toBe(true);
+    const hw = Object.fromEntries(res.hardware.map((h) => [h.id, h.qty]));
+    for (const id of ['sliding-door', 'sliding-profile-v', 'sliding-profile-top', 'sliding-profile-bottom', 'sliding-track-top', 'sliding-track-bottom', 'sliding-rollers', 'sliding-brush']) expect(hw[id], id).toBeGreaterThan(0);
+    expect(hw['sliding-profile-v']).toBeCloseTo((2 * 3 * 2454) / 1000, 1);
+    expect(res.hardware.find((h) => h.id === 'sliding-door')!.name.ru).toContain('перехлёст 26');
+  });
+  it('штанга, полки и 2 ящика нормальной высоты (а не комод)', () => {
+    expect(d.columns.some((c) => c.rod)).toBe(true);
+    expect(d.columns.reduce((s, c) => s + c.shelves, 0)).toBeGreaterThanOrEqual(5);
+    const drawers = d.columns.reduce((s, c) => s + c.drawers, 0);
+    expect(drawers).toBeGreaterThanOrEqual(1);
+    expect(drawers).toBeLessThanOrEqual(2);
+    const fronts = res.parts.filter((p) => p.role === 'drawerFront');
+    for (const f of fronts) {
+      expect(f.width).toBeGreaterThanOrEqual(150);
+      expect(f.width).toBeLessThanOrEqual(200);
+    }
+    expect(res.hardware.some((h) => h.id === 'rod')).toBe(true);
+  });
+  it('шаблон «Комод» остался отдельным изделием с ящиками', () => {
+    const chest = BUILTIN_TEMPLATES.find((t) => t.id === 'chest')!;
+    expect(chest.name.uk).toContain('Комод');
+    const cd = chest.make();
+    expect(cd.facade.type).toBe('drawers');
+    expect(generateCabinet(cd, cat).parts.filter((p) => p.role === 'drawerFront')).toHaveLength(4);
+  });
+  it('переключение фасадов на «ящики» не даёт ящиков высотой 770 мм', () => {
+    const tall = { ...d, facade: { ...d.facade, type: 'drawers' as const } };
+    const n = autoDrawerCount(tall);
+    expect(n).toBeGreaterThanOrEqual(8);
+    const cols = tall.columns.map((c) => ({ ...c, drawers: Math.max(c.drawers, n) }));
+    const r2 = generateCabinet({ ...tall, columns: cols }, cat);
+    const fh = Math.max(...r2.parts.filter((p) => p.role === 'drawerFront').map((p) => p.width));
+    expect(fh).toBeLessThan(400);
+    // а если оставить 3 ящика на всю высоту — есть предупреждение
+    const r3 = generateCabinet({ ...tall, columns: tall.columns.map((c) => ({ ...c, drawers: 3 })) }, cat);
+    expect(r3.warnings.some((w) => w.ru.includes('слишком высокий'))).toBe(true);
+  });
+  it('наполнение дверей — ЛДСП 10 мм, попадает в деталировку и раскрой с текстурой вдоль', () => {
+    const infill = rows.filter((r) => r.name.ru === 'Наполнение двери-купе');
+    expect(infill.reduce((s, r) => s + r.qty, 0)).toBe(3);
+    expect(infill[0].materialId).toBe('ldsp10');
+    expect(infill[0].grain).toBe('length');
+    const n = nestCutList(rows, cat).find((x) => x.materialId === 'ldsp10')!;
+    expect(n.unplaced).toHaveLength(0);
+    expect(n.sheets.every((sh) => sh.placements.every((p) => !p.rotated && p.l > p.w))).toBe(true);
+  });
+  it('старые проекты получают ЛДСП 10 мм в каталог', () => {
+    const old = { id: 'x', name: 'o', kind: 'apartment', levels: [], cabinetCatalog: { ...cat, boards: cat.boards.filter((b) => b.id !== 'ldsp10') } } as never;
+    expect(migrateProject(old).cabinetCatalog.boards.some((b) => b.id === 'ldsp10')).toBe(true);
+  });
+});
+
+describe('0.3 направление текстуры детали в раскрое', () => {
+  const cat = defaultCabinetCatalog();
+  const base = BUILTIN_TEMPLATES.find((t) => t.id === 'bookshelf')!.make();
+  it('«вдоль» — длина детали по длине листа, «поперёк» — по ширине, «без» — свободный поворот', () => {
+    const mk = (grain: 'length' | 'width' | 'none') => {
+      const d = { ...base, extraParts: [{ id: 'm', name: 'Тест', materialId: 'ldsp16', length: 1500, width: 300, qty: 1, edges: { l1: null, l2: null, w1: null, w2: null }, grain }] };
+      const rows = buildCutList(generateCabinet(d, cat).parts, cat);
+      const n = nestCutList(rows, cat).find((x) => x.materialId === 'ldsp16')!;
+      const row = rows.find((r) => r.name.ru === 'Тест')!;
+      return { p: n.sheets.flatMap((s) => s.placements).find((q) => q.id.startsWith(row.key))!, row };
+    };
+    const a = mk('length');
+    expect([a.p.l, a.p.w, a.p.rotated]).toEqual([1500, 300, false]);
+    const b = mk('width');
+    expect([b.p.l, b.p.w, b.p.rotated]).toEqual([300, 1500, true]);
+    expect(mk('none').row.grain).toBe('none');
+  });
+  it('переопределение направления для сгенерированной детали', () => {
+    const d = { ...base, overrides: { 'side-l': { grain: 'width' as const } } };
+    const res = generateCabinet(d, cat);
+    expect(res.parts.find((p) => p.key === 'side-l')!.grain).toBe('width');
+    // боковина 2000 мм поперёк текстуры ложится по ширине листа 2070
+    const n = nestCutList(buildCutList(res.parts, cat), cat).find((x) => x.materialId === 'ldsp16')!;
+    expect(n.unplaced).toHaveLength(0);
+    const side = n.sheets.flatMap((s) => s.placements).find((p) => p.rotated && p.w > 1900)!;
+    expect(side.l).toBeLessThan(400);
+  });
+  it('материал без текстуры: направление игнорируется, поворот разрешён', () => {
+    const r = nest([{ id: 'a', label: '', l: 2040, w: 2700, canRotate: true }], 2800, 2070, 4, 10);
+    expect(r.sheets[0].placements[0].rotated).toBe(true);
+  });
+});
+
+describe('0.3 раскрой: компактнее, с деловыми остатками', () => {
+  const cat = defaultCabinetCatalog();
+  const run = (id: string, mat: string) => {
+    const rows = buildCutList(generateCabinet(BUILTIN_TEMPLATES.find((t) => t.id === id)!.make(), cat).parts, cat);
+    return nestCutList(rows, cat).find((x) => x.materialId === mat)!;
+  };
+  const sheetArea = 2800 * 2070;
+  it('наибольший свободный прямоугольник', () => {
+    expect(largestFreeRect(1000, 500, [])).toEqual({ x: 0, y: 0, l: 1000, w: 500 });
+    expect(largestFreeRect(1000, 500, [{ x: 0, y: 0, l: 400, w: 500 }])).toEqual({ x: 400, y: 0, l: 600, w: 500 });
+    // деталь в углу: лучший остаток — полоса справа на всю высоту или снизу на всю длину
+    const r = largestFreeRect(1000, 500, [{ x: 0, y: 0, l: 300, w: 200 }])!;
+    expect(r.l * r.w).toBe(700 * 500);
+    // с учётом пропила
+    expect(largestFreeRect(1000, 500, [{ x: 0, y: 0, l: 400, w: 500 }], 4)!.x).toBe(404);
+    const two = freeOffcuts(1000, 500, [{ x: 0, y: 0, l: 300, w: 200 }], 0);
+    expect(two).toHaveLength(2);
+    expect(two[1].l * two[1].w).toBe(300 * 300);
+  });
+  it('кухонная тумба: детали собраны в углу, остаток — больше половины листа (было: размазано на 2590 мм)', () => {
+    const n = run('kitchen-base', 'ldsp16');
+    expect(n.sheets).toHaveLength(1);
+    const off = n.sheets[0].offcut!;
+    expect((off.l * off.w) / sheetArea).toBeGreaterThan(0.6);
+    expect(n.waste).toBeLessThan(0.3);
+  });
+  it('шкаф-купе: 3 листа ЛДСП 18, на последнем — остаток не меньше 40 % листа (было ≤ 15 %)', () => {
+    const n = run('wardrobe-sliding', 'ldsp18');
+    expect(n.sheets).toHaveLength(3);
+    const off = n.sheets[2].offcut!;
+    expect((off.l * off.w) / sheetArea).toBeGreaterThan(0.4);
+    expect(n.waste).toBeLessThan(0.2);
+  });
+  it('типовые изделия: отходы без деловых остатков заметно ниже прежних', () => {
+    // прежний алгоритм: доля листа, занятая до крайней детали (остальное — единственный остаток)
+    const before: Record<string, number> = { 'wardrobe-hinged': 0.533, chest: 0.534, bookshelf: 0.547, 'kitchen-drawers': 0.593 };
+    for (const [id, old] of Object.entries(before)) {
+      const mat = id === 'wardrobe-hinged' ? 'ldsp18' : 'ldsp16';
+      const n = run(id, mat);
+      expect(n.waste, id).toBeLessThan(old * 0.5);
+      expect(n.unplaced, id).toHaveLength(0);
+    }
+  });
+  it('остатки не пересекаются с деталями и между собой, лежат в пределах листа', () => {
+    for (const id of ['wardrobe-sliding', 'chest', 'kitchen-drawers']) {
+      for (const n of nestCutList(buildCutList(generateCabinet(BUILTIN_TEMPLATES.find((t) => t.id === id)!.make(), cat).parts, cat), cat)) {
+        for (const sh of n.sheets) {
+          const rects = [...sh.placements, ...sh.offcuts];
+          for (const o of sh.offcuts) {
+            expect(o.x).toBeGreaterThanOrEqual(10 - 1e-6);
+            expect(o.x + o.l).toBeLessThanOrEqual(n.sheetL - 10 + 1e-6);
+            expect(o.y + o.w).toBeLessThanOrEqual(n.sheetW - 10 + 1e-6);
+          }
+          for (let i = 0; i < rects.length; i++) {
+            for (let j = i + 1; j < rects.length; j++) {
+              if (i < sh.placements.length && j < sh.placements.length) continue;
+              const a = rects[i];
+              const b = rects[j];
+              const sep = a.x + a.l <= b.x + 1e-6 || b.x + b.l <= a.x + 1e-6 || a.y + a.w <= b.y + 1e-6 || b.y + b.w <= a.y + 1e-6;
+              expect(sep, `${id} ${n.materialId}`).toBe(true);
+            }
+          }
+        }
+      }
+    }
+  });
+  it('время раскроя шкафа-купе — в пределах 300 мс', () => {
+    const rows = buildCutList(generateCabinet(BUILTIN_TEMPLATES.find((t) => t.id === 'wardrobe-sliding')!.make(), cat).parts, cat);
+    const t0 = performance.now();
+    nestCutList(rows, cat);
+    expect(performance.now() - t0).toBeLessThan(300);
+  });
+});

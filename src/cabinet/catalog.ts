@@ -5,6 +5,7 @@ export const SHEET_W = 2070;
 
 export function defaultCabinetCatalog(): CabinetCatalog {
   const boards: BoardMaterial[] = [
+    { id: 'ldsp10', name: { uk: 'ЛДСП 10 мм (наповнення дверей-купе)', ru: 'ЛДСП 10 мм (наполнение дверей-купе)' }, kind: 'ldsp', thickness: 10, sheetL: SHEET_L, sheetW: SHEET_W, grain: true, color: '#d2bd94' },
     { id: 'ldsp16', name: { uk: 'ЛДСП 16 мм', ru: 'ЛДСП 16 мм' }, kind: 'ldsp', thickness: 16, sheetL: SHEET_L, sheetW: SHEET_W, grain: true, color: '#d9c7a3' },
     { id: 'ldsp18', name: { uk: 'ЛДСП 18 мм', ru: 'ЛДСП 18 мм' }, kind: 'ldsp', thickness: 18, sheetL: SHEET_L, sheetW: SHEET_W, grain: true, color: '#cdb58a' },
     { id: 'ldsp18w', name: { uk: 'ЛДСП 18 мм біла', ru: 'ЛДСП 18 мм белая' }, kind: 'ldsp', thickness: 18, sheetL: SHEET_L, sheetW: SHEET_W, grain: false, color: '#f1f1ee' },

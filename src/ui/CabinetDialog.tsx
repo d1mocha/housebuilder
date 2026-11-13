@@ -7,8 +7,8 @@ import type { CutRow } from '../cabinet/cutlist';
 import { generateCabinet } from '../cabinet/generate';
 import { nestCutList } from '../cabinet/nesting';
 import type { MaterialNest } from '../cabinet/nesting';
-import { BUILTIN_TEMPLATES, cloneDesign, newColumn } from '../cabinet/templates';
-import type { CabinetCatalog, CabinetDesign, CabinetResult, EdgeSides, Part } from '../cabinet/types';
+import { BUILTIN_TEMPLATES, autoDrawerCount, cloneDesign, newColumn } from '../cabinet/templates';
+import type { CabinetCatalog, CabinetDesign, CabinetResult, EdgeSides, Grain, Part } from '../cabinet/types';
 import type { Prim3 } from '../catalog/registry';
 import { download, safeName, toCsv } from '../export/csv';
 import { fmt, useT } from '../i18n';
@@ -53,10 +53,14 @@ function Preview({ parts, design, showFacades }: { parts: Part[]; design: Cabine
     let depth = design.depth;
     for (const p of parts) {
       if (!p.box) continue;
-      const isFacade = p.role === 'facade' || p.role === 'drawerFront' || p.role === 'slidingDoor';
+      const isFacade = p.role === 'facade' || p.role === 'drawerFront' || p.role === 'slidingDoor' || p.role === 'slidingProfile';
       if (isFacade && !showFacades) continue;
       depth = Math.max(depth, p.box.y + p.box.sy);
       const board = catalog.boards.find((b) => b.id === p.materialId);
+      if (p.role === 'slidingProfile') {
+        prims.push({ t: 'box', x: p.box.x, y: p.box.y, z: p.box.z, w: p.box.sx, d: p.box.sy, h: p.box.sz, c: '#b8bcc2', m: 'metal' });
+        continue;
+      }
       prims.push({ t: 'box', x: p.box.x, y: p.box.y, z: p.box.z, w: p.box.sx, d: p.box.sy, h: p.box.sz, c: isFacade ? (design.color ?? shade(board?.color ?? '#cdb58a')) : (board?.color ?? '#cdb58a'), m: 'wood' });
     }
     return primsToGroup(prims, { w: design.width, d: depth });
@@ -125,11 +129,21 @@ function CutListTab({ design, rows, result, catalog }: { design: CabinetDesign; 
         } else d.overrides[key] = { ...d.overrides[key], materialId: v };
       }
     });
+  const setGrain = (row: CutRow, v: Grain) =>
+    updateDesign(design.id, (d) => {
+      for (const key of row.partKeys) {
+        if (key.startsWith('manual-')) {
+          const m = d.extraParts.find((x) => `manual-${x.id}` === key);
+          if (m) m.grain = v;
+        } else d.overrides[key] = { ...d.overrides[key], grain: v };
+      }
+    });
+  const grainName = (g: Grain) => (g === 'length' ? t('уздовж', 'вдоль') : g === 'width' ? t('упоперек', 'поперёк') : t('без', 'без'));
   const edges = edgeTotals(result.parts);
   const mats = materialTotals(rows);
   const exportCsv = () => {
     const head = ['№', t('Деталь', 'Деталь'), t('Матеріал', 'Материал'), t('Товщина', 'Толщина'), t('Довжина', 'Длина'), t('Ширина', 'Ширина'), t('Пильна довжина', 'Пильная длина'), t('Пильна ширина', 'Пильная ширина'), t('К-сть', 'Кол-во'), t('Крайка L1', 'Кромка L1'), t('Крайка L2', 'Кромка L2'), t('Крайка W1', 'Кромка W1'), t('Крайка W2', 'Кромка W2'), t('Текстура', 'Текстура')];
-    const body = rows.map((r, i) => [i + 1, ls(r.name), ls(board(r.materialId)?.name), r.thickness, r.length, r.width, r.cutLength, r.cutWidth, r.qty, edgeLabel(catalog, r.edges.l1), edgeLabel(catalog, r.edges.l2), edgeLabel(catalog, r.edges.w1), edgeLabel(catalog, r.edges.w2), r.grain === 'length' ? t('уздовж', 'вдоль') : '—']);
+    const body = rows.map((r, i) => [i + 1, ls(r.name), ls(board(r.materialId)?.name), r.thickness, r.length, r.width, r.cutLength, r.cutWidth, r.qty, edgeLabel(catalog, r.edges.l1), edgeLabel(catalog, r.edges.l2), edgeLabel(catalog, r.edges.w1), edgeLabel(catalog, r.edges.w2), grainName(r.grain)]);
     const tail: (string | number)[][] = [[], [t('Крайка', 'Кромка'), t('Чиста, м', 'Чистая, м'), t('Із запасом, м', 'С запасом, м')], ...edges.map((e) => [ls(catalog.bands.find((b) => b.id === e.bandId)?.name), e.netM, e.grossM])];
     download(`${safeName(design.name)}_detali.csv`, toCsv([head, ...body, ...tail]), 'text/csv;charset=utf-8');
   };
@@ -154,6 +168,7 @@ function CutListTab({ design, rows, result, catalog }: { design: CabinetDesign; 
             <th>L2</th>
             <th>W1</th>
             <th>W2</th>
+            <th title={t('Напрямок текстури відносно довжини деталі', 'Направление текстуры относительно длины детали')}>{t('Текстура', 'Текстура')}</th>
             <th>{t('К-сть', 'Кол-во')}</th>
             <th />
           </tr>
@@ -198,6 +213,13 @@ function CutListTab({ design, rows, result, catalog }: { design: CabinetDesign; 
                     <EdgeSelect value={r.edges[side]} catalog={catalog} onChange={(v) => setEdge(r, side, v)} />
                   </td>
                 ))}
+                <td className="edge-sel">
+                  <select value={r.grain} onChange={(e) => setGrain(r, e.target.value as Grain)} data-grain disabled={!board(r.materialId)?.grain} title={board(r.materialId)?.grain ? '' : t('Матеріал без текстури', 'Материал без текстуры')}>
+                    <option value="length">{t('уздовж', 'вдоль')}</option>
+                    <option value="width">{t('упоперек', 'поперёк')}</option>
+                    <option value="none">{t('без', 'без')}</option>
+                  </select>
+                </td>
                 <td className="center">{manual ? <NumInput value={manual.qty} min={1} max={500} digits={0} onChange={(v) => mutManual((m) => (m.qty = Math.round(v)))} /> : r.qty}</td>
                 <td>
                   {manual && (
@@ -210,7 +232,7 @@ function CutListTab({ design, rows, result, catalog }: { design: CabinetDesign; 
             );
           })}
           <tr className="total">
-            <td colSpan={9}>{t('Разом деталей', 'Всего деталей')}</td>
+            <td colSpan={10}>{t('Разом деталей', 'Всего деталей')}</td>
             <td className="center">{rows.reduce((s, r) => s + r.qty, 0)}</td>
             <td />
           </tr>
@@ -280,7 +302,7 @@ function NestingTab({ design, nests, catalog }: { design: CabinetDesign; nests: 
         return (
           <div key={n.materialId} data-nest={n.materialId}>
             <h4>
-              {ls(b?.name)} — {t('листів', 'листов')}: <b>{n.sheets.length}</b> ({n.sheetL}×{n.sheetW} мм) · {t('відходи', 'отходы')}: {fmt(n.waste * 100, 1)}%
+              {ls(b?.name)} — {t('листів', 'листов')}: <b>{n.sheets.length}</b> ({n.sheetL}×{n.sheetW} мм) · {t('деталі', 'детали')}: {fmt(n.partsArea / 1e6)} м² · {t('відходи без ділових залишків', 'отходы без деловых остатков')}: <b data-waste>{fmt(n.waste * 100, 1)}%</b>
             </h4>
             {n.unplaced.length > 0 && (
               <div className="warn-box">
@@ -296,11 +318,28 @@ function NestingTab({ design, nests, catalog }: { design: CabinetDesign; nests: 
                   </b>
                   <span className="muted">
                     {t('використано', 'использовано')} {fmt(sh.usage * 100, 1)}% · {sh.placements.length} {t('дет.', 'дет.')}
+                    {sh.offcuts.length > 0 && ` · ${t('ділові залишки', 'деловые остатки')}: ${sh.offcuts.map((o) => `${Math.round(o.l)}×${Math.round(o.w)}`).join(', ')} мм`}
                   </span>
                 </div>
                 <svg viewBox={`0 0 ${n.sheetL} ${n.sheetW}`} preserveAspectRatio="xMidYMid meet">
                   <rect x={0} y={0} width={n.sheetL} height={n.sheetW} fill="#efe9dc" stroke="#6b7280" strokeWidth={4} />
                   <rect x={catalog.trim} y={catalog.trim} width={n.sheetL - 2 * catalog.trim} height={n.sheetW - 2 * catalog.trim} fill="none" stroke="#b45309" strokeWidth={2} strokeDasharray="20 12" />
+                  {sh.offcuts.map((o, oi) => (
+                    <g data-offcut key={oi}>
+                      <rect x={o.x} y={o.y} width={o.l} height={o.w} fill="#dcfce7" stroke="#16a34a" strokeWidth={3} strokeDasharray="24 14" />
+                      {o.l > 400 && o.w > 150 && (
+                        <text x={o.x + o.l / 2} y={o.y + o.w / 2} fontSize={Math.min(48, o.w / 3)} textAnchor="middle" dominantBaseline="central" fill="#15803d">
+                          {t('залишок', 'остаток')} {Math.round(o.l)}×{Math.round(o.w)}
+                        </text>
+                      )}
+                    </g>
+                  ))}
+                  {b?.grain && (
+                    <g opacity={0.5}>
+                      <line x1={60} y1={n.sheetW - 40} x2={360} y2={n.sheetW - 40} stroke="#92400e" strokeWidth={6} />
+                      <polygon points={`360,${n.sheetW - 40} 320,${n.sheetW - 60} 320,${n.sheetW - 20}`} fill="#92400e" />
+                    </g>
+                  )}
                   {sh.placements.map((p) => {
                     if (!colorOf.has(p.label)) colorOf.set(p.label, SHEET_COLORS[colorOf.size % SHEET_COLORS.length]);
                     const fs = Math.max(22, Math.min(60, Math.min(p.l / 7, p.w / 2.2)));
@@ -538,7 +577,8 @@ function DesignForm({ design, catalog }: { design: CabinetDesign; catalog: Cabin
             mut((d) => {
               d.facade.type = v as CabinetDesign['facade']['type'];
               if (v === 'hinged') d.columns.forEach((c) => c.doors === 0 && (c.doors = 1));
-              if (v === 'drawers') d.columns.forEach((c) => c.drawers === 0 && (c.drawers = 3));
+              // фасад «шухляди»: кількість підбирається так, щоб фасад був ≈ 200 мм, а не на всю висоту шафи
+              if (v === 'drawers') d.columns.forEach((c) => (c.drawers = Math.max(c.drawers, autoDrawerCount(d))));
             })
           }
         />
@@ -550,7 +590,11 @@ function DesignForm({ design, catalog }: { design: CabinetDesign; catalog: Cabin
             <Num label={t('Перехлест', 'Перехлёст')} value={f.slidingOverlap} min={0} max={80} unit="мм" onChange={(v) => mut((d) => (d.facade.slidingOverlap = v))} />
             <Num label={t('Зона під систему купе', 'Зона под систему купе')} value={f.slidingZone} min={60} max={150} unit="мм" onChange={(v) => mut((d) => (d.facade.slidingZone = v))} />
             <Num label={t('Вирахування висоти дверей', 'Вычет высоты двери')} value={f.slidingHeightDeduct} min={0} max={100} unit="мм" onChange={(v) => mut((d) => (d.facade.slidingHeightDeduct = v))} />
-            <Check label={t('Полотна з плити — у деталювання', 'Полотна из плиты — в деталировку')} value={f.slidingInfill} onChange={(v) => mut((d) => (d.facade.slidingInfill = v))} />
+            <Num label={t('Ширина вертикального профілю', 'Ширина вертикального профиля')} value={f.slidingProfile ?? 26} min={10} max={60} unit="мм" onChange={(v) => mut((d) => (d.facade.slidingProfile = v))} />
+            <Num label={t('Наповнення вужче за двері на', 'Наполнение уже двери на')} value={f.slidingInfillDeductW ?? 36} min={0} max={120} unit="мм" onChange={(v) => mut((d) => (d.facade.slidingInfillDeductW = v))} />
+            <Num label={t('Наповнення нижче за двері на', 'Наполнение ниже двери на')} value={f.slidingInfillDeductH ?? 60} min={0} max={160} unit="мм" onChange={(v) => mut((d) => (d.facade.slidingInfillDeductH = v))} />
+            <Check label={t('Наповнення з плити — у деталювання та розкрій', 'Наполнение из плиты — в деталировку и раскрой')} value={f.slidingInfill} onChange={(v) => mut((d) => (d.facade.slidingInfill = v))} />
+            <p className="hint">{t('Розміри дверей і наповнення залежать від системи профілю — звірте з таблицею виробника.', 'Размеры дверей и наполнения зависят от системы профиля — сверьте с таблицей производителя.')}</p>
           </>
         )}
         {(f.type === 'hinged' || f.type === 'drawers') && <Check label={t('Ручки', 'Ручки')} value={f.handles} onChange={(v) => mut((d) => (d.facade.handles = v))} />}

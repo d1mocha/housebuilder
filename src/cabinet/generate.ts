@@ -1,6 +1,6 @@
 // Генерация деталей и фурнитуры корпусного изделия из параметрического описания.
 import type { LS } from '../model/types';
-import type { BoardMaterial, CabinetCatalog, CabinetDesign, CabinetResult, EdgeSides, HardwareLine, Part, PartBox, PartRole } from './types';
+import type { BoardMaterial, CabinetCatalog, CabinetDesign, CabinetResult, EdgeSides, Grain, HardwareLine, Part, PartBox, PartRole } from './types';
 
 const L = (uk: string, ru: string): LS => ({ uk, ru });
 const PCS = L('шт', 'шт');
@@ -9,6 +9,8 @@ const METER = L('м', 'м');
 const SET = L('компл.', 'компл.');
 
 const NO_EDGES: EdgeSides = { l1: null, l2: null, w1: null, w2: null };
+/** Псевдо-материал профиля дверей-купе (только для 3D-превью). */
+export const PROFILE_MATERIAL = '__profile';
 
 export const HINGE_NAMES = {
   overlay: L('Петля накладна', 'Петля накладная'),
@@ -71,7 +73,7 @@ export function generateCabinet(d: CabinetDesign, cat: CabinetCatalog): CabinetR
   const Hd = d.edgeHidden;
   const FE = d.edgeFacade;
 
-  const add = (key: string, name: LS, role: PartRole, materialId: string, thickness: number, length: number, width: number, edges: EdgeSides, box: PartBox, grain: 'length' | 'none' = 'length', virtual = false) => {
+  const add = (key: string, name: LS, role: PartRole, materialId: string, thickness: number, length: number, width: number, edges: EdgeSides, box: PartBox, grain: Grain = 'length', virtual = false) => {
     if (length <= 0 || width <= 0) return;
     const p: Part & { virtual?: boolean } = { key, name, role, materialId, length: r1(length), width: r1(width), thickness, edges, qty: 1, grain, box };
     if (virtual) p.virtual = true;
@@ -198,6 +200,7 @@ export function generateCabinet(d: CabinetDesign, cat: CabinetCatalog): CabinetR
     if (nd > 0) {
       if (ft === 'drawers') {
         const fh = (zoneH - nd * gap) / nd;
+        if (fh > 400) warnings.push(L(`Секція ${ci + 1}: фасад шухляди ${Math.round(fh)} мм — зависокий, збільште кількість шухляд`, `Секция ${ci + 1}: фасад ящика ${Math.round(fh)} мм — слишком высокий, увеличьте количество ящиков`));
         for (let i = 0; i < nd; i++) {
           addDrawer(ci, i, cw, cx, zoneZ0 + gap / 2 + i * (fh + gap), fh, span - gap, spanX0 + gap / 2, frontY, innerDepth);
         }
@@ -274,26 +277,49 @@ export function generateCabinet(d: CabinetDesign, cat: CabinetCatalog): CabinetR
     const ov = d.facade.slidingOverlap;
     const doorW = (openW + ov * (n - 1)) / n;
     const doorH = openH - d.facade.slidingHeightDeduct;
+    // Дверь = алюминиевая рамка (вертикальные профили-ручки, верхний и нижний горизонтальные) + наполнение.
+    const pv = d.facade.slidingProfile ?? 26; // видимая ширина вертикального профиля
+    const ph = 38; // условная высота горизонтальных профилей в 3D
+    const dedW = d.facade.slidingInfillDeductW ?? 36;
+    const dedH = d.facade.slidingInfillDeductH ?? 60;
+    const infillW = doorW - dedW;
+    const infillH = doorH - dedH;
+    const pt = 30; // толщина рамки в 3D
     for (let i = 0; i < n; i++) {
-      const dy = frontY - d.facade.slidingZone + 15 + (i % 2) * 40;
+      const dy = frontY - d.facade.slidingZone + 12 + (i % 2) * 42;
+      const dx = T + i * (doorW - ov);
+      const dz = innerZ0 + d.facade.slidingHeightDeduct / 2;
       add(
         `sliding-${i + 1}`,
         L('Наповнення дверей-купе', 'Наполнение двери-купе'),
         'slidingDoor',
         d.facadeMaterialId,
         TF,
-        doorH,
-        doorW,
+        infillH,
+        infillW,
         NO_EDGES,
-        { x: T + i * (doorW - ov), y: dy, z: innerZ0 + d.facade.slidingHeightDeduct / 2, sx: doorW, sy: TF, sz: doorH },
+        { x: dx + (doorW - infillW) / 2, y: dy + (pt - TF) / 2, z: dz + (doorH - infillH) / 2, sx: infillW, sy: TF, sz: infillH },
         'length',
         !d.facade.slidingInfill,
       );
+      // рамка — только для 3D
+      const prof = (key: string, x: number, z: number, sx: number, sz: number) => add(`sliding-${i + 1}-${key}`, L('Профіль дверей-купе', 'Профиль двери-купе'), 'slidingProfile', PROFILE_MATERIAL, pt, Math.max(sx, sz), Math.min(sx, sz), NO_EDGES, { x, y: dy, z, sx, sy: pt, sz }, 'none', true);
+      prof('pl', dx, dz, pv, doorH);
+      prof('pr', dx + doorW - pv, dz, pv, doorH);
+      prof('pt', dx + pv, dz + doorH - ph, doorW - 2 * pv, ph);
+      prof('pb', dx + pv, dz, doorW - 2 * pv, ph);
     }
-    addHw('sliding-door', L(`Двері-купе ${Math.round(doorW)}×${Math.round(doorH)} мм`, `Дверь-купе ${Math.round(doorW)}×${Math.round(doorH)} мм`), n, PCS, L('розмір полотна з профілем; уточнити за таблицею системи', 'размер полотна с профилем; уточнить по таблице системы'));
-    addHw('sliding-track-top', L('Напрямна верхня для купе', 'Направляющая верхняя для купе'), r1(openW / 1000), METER);
-    addHw('sliding-track-bottom', L('Напрямна нижня для купе', 'Направляющая нижняя для купе'), r1(openW / 1000), METER);
+    const NOTE = L('уточнити за таблицею системи профілю', 'уточнить по таблице системы профиля');
+    addHw('sliding-door', L(`Двері-купе ${Math.round(doorW)}×${Math.round(doorH)} мм (перекриття ${ov} мм)`, `Дверь-купе ${Math.round(doorW)}×${Math.round(doorH)} мм (перехлёст ${ov} мм)`), n, PCS, NOTE);
+    addHw('sliding-profile-v', L('Профіль вертикальний (ручка)', 'Профиль вертикальный (ручка)'), r1((2 * n * doorH) / 1000), METER);
+    addHw('sliding-profile-top', L('Профіль горизонтальний верхній', 'Профиль горизонтальный верхний'), r1((n * (doorW - 2 * pv)) / 1000), METER, NOTE);
+    addHw('sliding-profile-bottom', L('Профіль горизонтальний нижній', 'Профиль горизонтальный нижний'), r1((n * (doorW - 2 * pv)) / 1000), METER, NOTE);
+    addHw('sliding-track-top', L('Напрямна верхня подвійна', 'Направляющая верхняя двойная'), r1(openW / 1000), METER);
+    addHw('sliding-track-bottom', L('Напрямна нижня подвійна', 'Направляющая нижняя двойная'), r1(openW / 1000), METER);
     addHw('sliding-rollers', L('Комплект роликів на двері', 'Комплект роликов на дверь'), n, SET);
+    addHw('sliding-brush', L('Щітка-ущільнювач (шлегель)', 'Щётка-уплотнитель (шлегель)'), r1((2 * n * doorH) / 1000), METER);
+    addHw('sliding-stopper', L('Стопор дверей', 'Стопор двери'), n, PCS);
+    if (!d.facade.slidingInfill) addHw('sliding-infill', L(`Наповнення дверей ${Math.round(infillW)}×${Math.round(infillH)} мм (дзеркало/скло/плита)`, `Наполнение двери ${Math.round(infillW)}×${Math.round(infillH)} мм (зеркало/стекло/плита)`), n, PCS, NOTE);
     if (doorW > 1200) warnings.push(L('Двері-купе ширші за 1200 мм — збільште кількість дверей', 'Двери-купе шире 1200 мм — увеличьте количество дверей'));
     if (doorW < 500) warnings.push(L('Двері-купе вужчі за 500 мм — зменште кількість дверей', 'Двери-купе уже 500 мм — уменьшите количество дверей'));
   }
@@ -361,6 +387,7 @@ export function generateCabinet(d: CabinetDesign, cat: CabinetCatalog): CabinetR
       const b = board(ov.materialId);
       if (b) q = { ...q, materialId: b.id, thickness: b.thickness };
     }
+    if (ov?.grain) q = { ...q, grain: ov.grain };
     out.push(q);
   }
   for (const m of d.extraParts) {
