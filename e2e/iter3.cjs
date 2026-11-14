@@ -198,6 +198,55 @@ const fs = require('fs');
   await page.screenshot({ path: path.join(out, '55-drawing-auto.png') });
   await page.click('.dialog footer >> text=Закрити');
 
+  // ── 6. выравнивание и распределение выделенных стен ──
+  await page.click('[data-menu="file"]');
+  await page.click('text=Новий проєкт…');
+  await page.click('[data-kind="apartment"]');
+  await page.click('[data-action="create"]');
+  await page.waitForTimeout(400);
+  await page.keyboard.press('KeyR');
+  await clickWorld(page, 0, 0);
+  await clickWorld(page, 8000, 5000);
+  await page.keyboard.press('KeyW');
+  for (const [x1, y1, x2, y2] of [[2000, 0, 2000, 5000], [3200, 0, 3200, 5000], [6000, 0, 6000, 5000]]) {
+    await clickWorld(page, x1, y1);
+    await clickWorld(page, x2, y2);
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('KeyW');
+  }
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Home');
+  await page.waitForTimeout(300);
+  let lw = await L();
+  const part = (x) => lw.walls.find((w) => w.a.x === x && w.b.x === x && Math.abs(w.b.y - w.a.y) === 5000);
+  check('6 нарисованы три параллельные перегородки', !!part(2000) && !!part(3200) && !!part(6000), `${lw.walls.length} стен`);
+  const ids3 = [part(2000).id, part(3200).id, part(6000).id];
+  const shiftClick3 = async (x, y) => { await page.keyboard.down('Shift'); await clickWorld(page, x, y); await page.keyboard.up('Shift'); };
+  await clickWorld(page, 2000, 2500);
+  await shiftClick3(3200, 2500);
+  await shiftClick3(6000, 2500);
+  check('6 панель группы стен: выравнивание по оси и по граням, распределение', (await count('[data-wall-align="axis"]')) === 1 && (await count('[data-wall-align="faceMin"]')) === 1 && (await count('[data-wall-align="faceMax"]')) === 1 && (await count('[data-wall-distribute]')) === 1 && /По лівій грані/.test(await page.textContent('[data-wall-align="faceMin"]')));
+  const pastW = (await state(page)).past;
+  await page.click('[data-wall-distribute]');
+  lw = await L();
+  const xs = ids3.map((id) => lw.walls.find((w) => w.id === id).a.x);
+  check('6 распределение: равный шаг между осями, крайние стены на месте', JSON.stringify(xs) === JSON.stringify([2000, 4000, 6000]) && (await state(page)).past === pastW + 1, xs.join(', '));
+  check('6 помещения пересчитаны: четыре комнаты шириной по 2 м между осями', lw.rooms.length === 4);
+  await page.keyboard.press('Escape');
+  await clickWorld(page, 2000, 2500);
+  await shiftClick3(4000, 2500);
+  await page.click('[data-wall-align="axis"]');
+  lw = await L();
+  check('6 выравнивание по оси: вторая стена встала на линию первой', lw.walls.find((w) => w.id === ids3[1]).a.x === 2000 && lw.walls.find((w) => w.id === ids3[0]).a.x === 2000, String(lw.walls.find((w) => w.id === ids3[1]).a.x));
+  await page.keyboard.press('Control+KeyZ');
+  // непараллельные стены: кнопок нет, есть пояснение
+  await page.keyboard.press('Escape');
+  await clickWorld(page, 2000, 2500);
+  await shiftClick3(1000, 0);
+  check('6 для непараллельных стен выравнивание недоступно (с пояснением)', (await count('[data-wall-align="axis"]')) === 0 && (await count('[data-wall-align-na]')) === 1);
+  await page.screenshot({ path: path.join(out, '56-wall-align.png') });
+  await page.keyboard.press('Escape');
+
   check('нет ошибок в консоли', errors.length === 0, errors.slice(0, 5).join(' | '));
   await browser.close();
 })().catch((e) => {

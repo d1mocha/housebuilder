@@ -13,7 +13,7 @@ import { fmt, useT } from '../i18n';
 import { snapshotBaseline } from '../model/demo';
 import { createLevel } from '../model/defaults';
 import { add, dist, mul, norm, polygonArea, polylineLength, sub } from '../model/geometry';
-import { alignItems, distributeItems, duplicateEntity, findEntity, getContainer, getLevel, removeEntity } from '../model/ops';
+import { alignItems, alignWalls, distributeItems, distributeWalls, duplicateEntity, findEntity, getContainer, getLevel, removeEntity, wallFacesKind, wallsNormal } from '../model/ops';
 import type { AlignMode } from '../model/ops';
 import type { Dim, ElementStatus, Finish, Item, Level, Opening, Params, ParamValue, Project, Room, Route, Sel, Wall, Zone } from '../model/types';
 import { clampOpeningPos, roomSurfaces, surfaceNetArea, wallLen, wallLength } from '../model/walls';
@@ -730,6 +730,18 @@ function GroupProps({ sels, project }: { sels: Sel[]; project: Project }) {
         if (x) fn(x);
       }
     });
+  /** Общая нормаль выделенных стен (null — не параллельны). */
+  const wallN = only('wall') && walls.length >= 2 ? wallsNormal(walls) : null;
+  /** Операция над выделенными стенами одного этажа — одной записью истории. */
+  const wallOp = (fn: (l: Level, ids: string[]) => void) =>
+    upd((d) => {
+      const byScope = new Map<string, string[]>();
+      for (const s of sels) if (s.type === 'wall') byScope.set(s.scope, [...(byScope.get(s.scope) ?? []), s.id]);
+      for (const [scope, ids] of byScope) {
+        const l = getLevel(d, scope);
+        if (l) fn(l, ids);
+      }
+    });
   const kinds = new Set(items.map((i) => i.kind));
   const def = kinds.size === 1 ? itemDef(items[0].kind) : undefined;
   // общие параметры разнотипных объектов — по совпадающим ключу и типу поля
@@ -771,6 +783,32 @@ function GroupProps({ sels, project }: { sels: Sel[]; project: Project }) {
             <Check label={lab(t('Зовнішня', 'Наружная'), common(walls, (w) => !!w.exterior))} value={walls.every((w) => !!w.exterior)} onChange={(v) => mutAll<Wall>('wall', (w) => (w.exterior = v))} />
             <StatusSelect value={common(walls, (w) => w.status ?? 'new') ?? 'new'} onChange={(v) => mutAll<Wall>('wall', (w) => (w.status = v))} />
             <Info label={t('Сумарна довжина', 'Суммарная длина')} value={`${fmt(walls.reduce((a, w) => a + wallLen(w), 0) / 1000)} м`} />
+            <div className="sub-title">{t('Вирівняти стіни', 'Выровнять стены')}</div>
+            {wallN ? (
+              <>
+                <div className="preset-row" data-wall-align>
+                  <button className="chip" data-wall-align="axis" onClick={() => wallOp((l, ids) => alignWalls(l, ids, 'axis'))} title={t('Осі стін — на одну лінію', 'Оси стен — на одну линию')}>
+                    ┆ {t('По осі', 'По оси')}
+                  </button>
+                  <button className="chip" data-wall-align="faceMin" onClick={() => wallOp((l, ids) => alignWalls(l, ids, 'faceMin'))}>
+                    {wallFacesKind(wallN) === 'lr' ? `⇤ ${t('По лівій грані', 'По левой грани')}` : `⤒ ${t('По верхній грані', 'По верхней грани')}`}
+                  </button>
+                  <button className="chip" data-wall-align="faceMax" onClick={() => wallOp((l, ids) => alignWalls(l, ids, 'faceMax'))}>
+                    {wallFacesKind(wallN) === 'lr' ? `⇥ ${t('По правій грані', 'По правой грани')}` : `⤓ ${t('По нижній грані', 'По нижней грани')}`}
+                  </button>
+                  {walls.length >= 3 && (
+                    <button className="chip" data-wall-distribute onClick={() => wallOp((l, ids) => distributeWalls(l, ids))} title={t('Рівний крок між осями, крайні стіни залишаються на місці', 'Равный шаг между осями, крайние стены остаются на месте')}>
+                      ↔ {t('Розподілити рівномірно', 'Распределить равномерно')}
+                    </button>
+                  )}
+                </div>
+                <p className="hint">{t('Стіни підтягуються до першої виділеної; прилеглі стіни тягнуться за вузлами.', 'Стены подтягиваются к первой выделенной; примыкающие стены тянутся за узлами.')}</p>
+              </>
+            ) : (
+              <p className="hint" data-wall-align-na>
+                {t('Вирівнювання й розподіл доступні для паралельних прямих стін.', 'Выравнивание и распределение доступны для параллельных прямых стен.')}
+              </p>
+            )}
           </>
         )}
         {only('opening') && openings.length > 0 && (

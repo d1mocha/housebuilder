@@ -6,7 +6,7 @@ import { count, countNoun, plural } from '../src/i18n';
 import { convexOverlap, itemsFlushToWall, itemsInWalls, openingsOutOfWall, orphanItems } from '../src/model/checks';
 import { createProject, createWall, roomDefaults } from '../src/model/defaults';
 import { createDemoProject } from '../src/model/demo';
-import { MIN_HANGING_BOTTOM, keepOpenings, makeItem, moveEntities, moveNode, raiseHangingLamps, removeEntity, translateWall, translateWalls } from '../src/model/ops';
+import { MIN_HANGING_BOTTOM, alignWalls, distributeWalls, wallFacesKind, wallsNormal, keepOpenings, makeItem, moveEntities, moveNode, raiseHangingLamps, removeEntity, translateWall, translateWalls } from '../src/model/ops';
 import { migrateProject } from '../src/model/migrate';
 import type { Finish, Level, Opening, Project, Sel } from '../src/model/types';
 import { syncRooms } from '../src/model/walls';
@@ -496,5 +496,84 @@ describe('5. чертежи: масштаб «Авто» — наибольши�
     const p = createDemoProject();
     expect(buildSheet(p, { kind: 'measure', levelId: p.levels[0].id, paper: 'A3', landscape: true, scale: 100 }).scale).toBe(100);
     expect(buildSheet(p, { kind: 'measure', levelId: p.levels[0].id, paper: 'A3', landscape: true, scale: 200 }).scale).toBe(200);
+  });
+});
+
+describe('6. выравнивание и распределение стен', () => {
+  /** Коробка 8×5 м с тремя вертикальными перегородками разной толщины от верхней стены до нижней. */
+  const setup = () => {
+    const p = createProject('apartment', 't');
+    const l = p.levels[0];
+    const c = [
+      { x: 0, y: 0 },
+      { x: 8000, y: 0 },
+      { x: 8000, y: 5000 },
+      { x: 0, y: 5000 },
+    ];
+    for (let i = 0; i < 4; i++) l.walls.push(createWall(c[i], c[(i + 1) % 4], { thickness: 200 }));
+    const a = createWall({ x: 2000, y: 0 }, { x: 2000, y: 2500 }, { thickness: 120 });
+    const b = createWall({ x: 2300, y: 2500 }, { x: 2300, y: 5000 }, { thickness: 250 });
+    const d = createWall({ x: 6000, y: 0 }, { x: 6000, y: 5000 }, { thickness: 100 });
+    const tie = createWall({ x: 2000, y: 2500 }, { x: 2300, y: 2500 }, { thickness: 120 }); // перемычка между a и b
+    l.walls.push(a, b, d, tie);
+    syncRooms(l, roomDefaults());
+    return { p, l, a, b, d, tie };
+  };
+  it('общая нормаль: вертикальные стены — «левая/правая» грань, горизонтальные — «верхняя/нижняя»', () => {
+    const { l, a, b } = setup();
+    expect(wallsNormal([a, b])).toEqual({ x: 1, y: 0 });
+    expect(wallFacesKind(wallsNormal([a, b])!)).toBe('lr');
+    const n = wallsNormal([l.walls[0], l.walls[2]])!; // верхняя и нижняя наружные (направления встречные)
+    expect([Math.abs(n.x) < 1e-9, n.y]).toEqual([true, 1]);
+    expect(wallFacesKind(n)).toBe('tb');
+    expect(wallsNormal([a, l.walls[0]])).toBeNull(); // перпендикулярные — нельзя
+    expect(wallsNormal([a])).toBeNull();
+  });
+  it('по оси: вторая стена встаёт на линию первой, перемычка между ними схлопывается', () => {
+    const { l, a, b, tie } = setup();
+    expect(alignWalls(l, [a.id, b.id], 'axis')).toBe(true);
+    expect([a.a.x, a.b.x, b.a.x, b.b.x]).toEqual([2000, 2000, 2000, 2000]);
+    expect(tie.b.x).toBe(2000); // узел перемычки приехал вместе со стеной
+    // порядок выделения задаёт образец: теперь ведёт b
+    const s2 = setup();
+    alignWalls(s2.l, [s2.b.id, s2.a.id], 'axis');
+    expect([s2.a.a.x, s2.b.a.x]).toEqual([2300, 2300]);
+  });
+  it('по грани: совпадают левые (или правые) грани стен разной толщины', () => {
+    const { l, a, b } = setup();
+    alignWalls(l, [a.id, b.id], 'faceMin');
+    expect(a.a.x - a.thickness / 2).toBe(1940);
+    expect(b.a.x - b.thickness / 2).toBe(1940);
+    alignWalls(l, [a.id, b.id], 'faceMax');
+    expect(b.a.x + b.thickness / 2).toBe(a.a.x + a.thickness / 2);
+  });
+  it('распределение: равный шаг между осями, крайние на месте', () => {
+    const { l, a, b, d } = setup();
+    expect(distributeWalls(l, [a.id, b.id, d.id])).toBe(true);
+    expect([a.a.x, b.a.x, d.a.x]).toEqual([2000, 4000, 6000]);
+    expect(distributeWalls(l, [a.id, b.id])).toBe(false); // нужно минимум три
+  });
+  it('непараллельные стены не трогаются', () => {
+    const { l, a } = setup();
+    const top = l.walls[0];
+    const before = JSON.stringify(l.walls);
+    expect(alignWalls(l, [a.id, top.id], 'axis')).toBe(false);
+    expect(distributeWalls(l, [a.id, top.id, l.walls[1].id])).toBe(false);
+    expect(JSON.stringify(l.walls)).toBe(before);
+  });
+  it('проёмы соседних стен при выравнивании остаются на месте', () => {
+    const p = createDemoProject();
+    const l = p.levels[0];
+    const before = l.openings.map((o) => absCenter(l, o));
+    const cross = crossOf(l);
+    // отдельно стоящая стенка-образец в спальне, параллельная перегородке
+    const ref = createWall({ x: 4900, y: 800 }, { x: 4900, y: 1600 }, { thickness: 100 });
+    l.walls.push(ref);
+    const own = new Set(l.openings.filter((o) => o.wallId === cross.id).map((o) => o.id));
+    expect(alignWalls(l, [ref.id, cross.id], 'axis')).toBe(true);
+    expect(cross.a.x).toBe(4900);
+    l.openings.forEach((o, i) => {
+      if (!own.has(o.id)) expect(absCenter(l, o)).toEqual(before[i]);
+    });
   });
 });

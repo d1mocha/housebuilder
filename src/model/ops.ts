@@ -481,6 +481,63 @@ export function distributeItems(p: Project, sels: Sel[], axis: 'x' | 'y'): void 
   }
 }
 
+// ───────── Выравнивание и распределение стен ─────────
+
+export type WallAlignMode = 'axis' | 'faceMin' | 'faceMax';
+
+/**
+ * Общая нормаль параллельных стен: направлена вправо (для вертикальных стен) или вниз (для горизонтальных),
+ * так что «min» — левая / верхняя грань, «max» — правая / нижняя. null — стены не параллельны или дуговые.
+ */
+export function wallsNormal(walls: Wall[], tolDeg = 1): Vec2 | null {
+  if (walls.length < 2 || walls.some((w) => arcInfo(w) || dist(w.a, w.b) < 1)) return null;
+  const d0 = norm(sub(walls[0].b, walls[0].a));
+  const tol = Math.sin((tolDeg * Math.PI) / 180);
+  if (walls.some((w) => Math.abs(d0.x * (w.b.y - w.a.y) - d0.y * (w.b.x - w.a.x)) / dist(w.a, w.b) > tol)) return null;
+  let n = { x: -d0.y, y: d0.x };
+  if (n.x < -1e-6 || (Math.abs(n.x) < 1e-6 && n.y < 0)) n = { x: -n.x, y: -n.y };
+  return { x: n.x + 0, y: n.y + 0 }; // без «минус нуля»
+}
+
+/** Как называются грани для набора параллельных стен: левая/правая или верхняя/нижняя. */
+export const wallFacesKind = (n: Vec2): 'lr' | 'tb' => (Math.abs(n.x) >= Math.abs(n.y) ? 'lr' : 'tb');
+
+const wallsOf = (level: Level, ids: string[]): Wall[] => ids.map((id) => level.walls.find((w) => w.id === id)).filter((w): w is Wall => !!w);
+
+/**
+ * Выровнять параллельные стены по первой из ids: по оси или по грани (с учётом толщины). Стены сдвигаются
+ * поперёк себя, примыкающие стены тянутся за узлами, проёмы соседних стен остаются на месте.
+ * Возвращает false, если стены не параллельны.
+ */
+export function alignWalls(level: Level, ids: string[], mode: WallAlignMode): boolean {
+  const walls = wallsOf(level, ids);
+  const n = wallsNormal(walls);
+  if (!n) return false;
+  const ref = walls[0];
+  const face = (w: Wall) => (mode === 'axis' ? 0 : mode === 'faceMin' ? -w.thickness / 2 : w.thickness / 2);
+  const target = dot(ref.a, n) + face(ref);
+  for (const w of walls.slice(1)) {
+    const shift = Math.round(target - (dot(w.a, n) + face(w)));
+    if (shift !== 0) translateWalls(level, [w.id], { x: n.x * shift, y: n.y * shift });
+  }
+  return true;
+}
+
+/** Распределить параллельные стены с равным шагом между осями: крайние остаются на месте. */
+export function distributeWalls(level: Level, ids: string[]): boolean {
+  const walls = wallsOf(level, ids);
+  const n = wallsNormal(walls);
+  if (!n || walls.length < 3) return false;
+  const sorted = [...walls].sort((p, q) => dot(p.a, n) - dot(q.a, n));
+  const first = dot(sorted[0].a, n);
+  const step = (dot(sorted[sorted.length - 1].a, n) - first) / (sorted.length - 1);
+  sorted.slice(1, -1).forEach((w, i) => {
+    const shift = Math.round(first + step * (i + 1) - dot(w.a, n));
+    if (shift !== 0) translateWalls(level, [w.id], { x: n.x * shift, y: n.y * shift });
+  });
+  return true;
+}
+
 /** Габарит объекта выделения на плане (для рамки выделения). */
 export function selBBox(p: Project, sel: Sel): { minX: number; minY: number; maxX: number; maxY: number } | null {
   const c = getContainer(p, sel.scope);
