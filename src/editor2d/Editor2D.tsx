@@ -1,175 +1,57 @@
-// SVG-редактор плана: вьюпорт, слои, инструменты, перетаскивание, привязки.
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// SVG-редактор плана: вьюпорт, режимы и слои, инструменты, мультивыделение, привязки и индикаторы геометрии.
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { siteShadowPrims } from '../calc/shadow2d';
 import { itemDef, routeDef, zoneDef } from '../catalog/registry';
 import { Prims } from '../draw2d/Svg';
-import {
-  COL,
-  autoDimPrims,
-  dimEntityPrims,
-  dimPrims,
-  itemLocalPrims,
-  itemSize,
-  northArrowPrims,
-  openingPrims,
-  roomLabelPrims,
-  routePrims,
-  sitePrims,
-  wallsPrims,
-  zonePrims,
-} from '../draw2d/plan';
-import type { Prim2 } from '../draw2d/prims';
+import { autoDimPrims, demolishedPrims, dimEntityPrims, itemSize, northArrowPrims, roomLabelPrims, sitePrims } from '../draw2d/plan';
 import { useT } from '../i18n';
-import { createOpening, createWall } from '../model/defaults';
-import { add, angleDeg, bbox, closestOnSegment, dist, dot, eq, mul, norm, perp, pointInPolygon, projectT, rectCorners, rotate, sub } from '../model/geometry';
+import { createOpening, createWall, defaultWallStatus } from '../model/defaults';
+import { add, angleDeg, closestOnSegment, dist, dot, eq, mid, mul, norm, perp, pointInPolygon, sub } from '../model/geometry';
 import { newId } from '../model/ids';
-import { duplicateEntity, flipWall, getContainer, getLevel, makeItem, moveNode, removeEntity, splitWall, translateWall } from '../model/ops';
-import type { Item, LayerId, Level, Opening, Project, Route, Sel, Vec2, Wall, Zone } from '../model/types';
-import { clampOpeningPos, nearestWall, openingGeom, wallDir, wallLength, wallPolygon } from '../model/walls';
+import { flipWall, getContainer, getLevel, itemBox, makeItem, moveEntities, moveNode, sameSel, selsInRect, splitWall, translateWall } from '../model/ops';
+import { segRelations } from '../model/relations';
+import type { Item, LayerId, Level, Opening, Route, Sel, Vec2, Wall, Zone } from '../model/types';
+import { baseWallId, geomOf, locateOnWall, openingGeom, wallDir, wallFacingRot, wallLen } from '../model/walls';
+import { deleteSelection, duplicateSelection, selectWithMode } from '../store/actions';
 import { useProject } from '../store/projectStore';
-import { useUi } from '../store/uiStore';
+import { MODE_LAYERS, useUi } from '../store/uiStore';
+import { alignSnap } from './align';
 import { ContextMenu } from './ContextMenu';
 import type { MenuEntry } from './ContextMenu';
 import { snapItemToWalls } from './itemSnap';
+import { poseNewItem } from './place';
+import { Grid, ItemG, OpeningG, PX_PER_PAPER_MM, RouteG, WallsLayer, ZoneG, clampPos, contentBBox, layerOfItem, layerOfRoute, layerOfZone, ptsAttr, wallHitPolys } from './layers';
+import type { View } from './layers';
+import { SelOverlay, ToolPreview, emptyPreview } from './overlays';
+import type { Preview } from './overlays';
 import { snapPoint } from './snapping';
 import type { SnapResult } from './snapping';
-import { siteShadowPrims } from '../calc/shadow2d';
-
-const PX_PER_PAPER_MM = 3.78;
-
-interface View {
-  cx: number;
-  cy: number;
-  zoom: number;
-}
 
 type Drag =
-  | { kind: 'pan'; sx: number; sy: number; cx0: number; cy0: number; moved: boolean; deselect: boolean }
-  | { kind: 'move'; sel: Sel; start: Vec2; moved: boolean }
+  | { kind: 'pan'; sx: number; sy: number; cx0: number; cy0: number; moved: boolean }
+  | { kind: 'marquee'; start: Vec2; additive: boolean; moved: boolean }
+  | { kind: 'move'; sels: Sel[]; start: Vec2; moved: boolean; cycle: Sel | null }
   | { kind: 'handle'; sel: Sel; h: string; i: number; start: Vec2; orig: Vec2; moved: boolean };
-
-interface Preview {
-  pts: Vec2[];
-  cur: Vec2 | null;
-  snap: SnapResult | null;
-  typed: string;
-  opening: Opening | null;
-  ghost: Item | null;
-  calibAsk: { a: Vec2; b: Vec2 } | null;
-}
-const emptyPreview: Preview = { pts: [], cur: null, snap: null, typed: '', opening: null, ghost: null, calibAsk: null };
-
-const layerOfItem = (it: Item): LayerId => itemDef(it.kind)?.layer ?? 'furniture';
-const layerOfRoute = (r: Route): LayerId => routeDef(r.kind)?.layer ?? 'electrical';
-const layerOfZone = (z: Zone): LayerId => zoneDef(z.kind)?.layer ?? 'heating';
-
-// ───────── Мемоизированные слои ─────────
-
-const WallsLayer = memo(function WallsLayer({ walls, openings, k, ghost }: { walls: Wall[]; openings: Opening[]; k: number; ghost?: boolean }) {
-  const prims = useMemo(() => wallsPrims(walls, openings), [walls, openings]);
-  return (
-    <g opacity={ghost ? 0.18 : 1} style={{ pointerEvents: 'none' }}>
-      <Prims prims={prims} k={k} />
-    </g>
-  );
-});
-
-const OpeningG = memo(function OpeningG({ o, wall, k, scope, locked }: { o: Opening; wall: Wall; k: number; scope: string; locked: boolean }) {
-  const prims = useMemo(() => openingPrims(o, wall), [o, wall]);
-  const g = openingGeom(o, wall);
-  return (
-    <g data-t="opening" data-id={o.id} data-scope={scope} style={{ pointerEvents: locked ? 'none' : undefined, cursor: 'move' }}>
-      <polygon points={g.quad.map((q) => `${q.x},${q.y}`).join(' ')} fill="#fff" fillOpacity={0.01} stroke="none" />
-      <Prims prims={prims} k={k} />
-    </g>
-  );
-});
-
-const ItemG = memo(function ItemG({ item, k, scope, locked, ghost }: { item: Item; k: number; scope: string; locked: boolean; ghost?: boolean }) {
-  const prims = useMemo(() => itemLocalPrims(item), [item.kind, item.params]); // eslint-disable-line react-hooks/exhaustive-deps
-  const s = itemSize(item);
-  const hw = Math.max(s.w, 160) / 2;
-  const hd = Math.max(s.d, 160) / 2;
-  return (
-    <g
-      data-t={ghost ? undefined : 'item'}
-      data-id={item.id}
-      data-scope={scope}
-      transform={`translate(${item.x} ${item.y}) rotate(${item.rot})`}
-      opacity={ghost ? 0.6 : 1}
-      style={{ pointerEvents: locked || ghost ? 'none' : undefined, cursor: 'move' }}
-    >
-      <rect x={-hw} y={-hd} width={hw * 2} height={hd * 2} fill="#fff" fillOpacity={0.01} />
-      <Prims prims={prims} k={k} />
-    </g>
-  );
-});
-
-const RouteG = memo(function RouteG({ route, k, scope, locked, color }: { route: Route; k: number; scope: string; locked: boolean; color?: string }) {
-  const prims = useMemo(() => routePrims(route, k, color), [route, k, color]);
-  return (
-    <g data-t="route" data-id={route.id} data-scope={scope} style={{ pointerEvents: locked ? 'none' : undefined, cursor: 'move' }}>
-      <polyline points={route.points.map((q) => `${q.x},${q.y}`).join(' ')} fill="none" stroke="#000" strokeOpacity={0.001} strokeWidth={Math.max(8 / (PX_PER_PAPER_MM / k), routeDef(route.kind)?.width?.(route.params) ?? 0)} />
-      <Prims prims={prims} k={k} />
-    </g>
-  );
-});
-
-const ZoneG = memo(function ZoneG({ zone, k, scope, locked, label }: { zone: Zone; k: number; scope: string; locked: boolean; label: string }) {
-  const prims = useMemo(() => zonePrims(zone, k, label), [zone, k, label]);
-  return (
-    <g data-t="zone" data-id={zone.id} data-scope={scope} style={{ pointerEvents: locked ? 'none' : undefined, cursor: 'move' }}>
-      <Prims prims={prims} k={k} />
-    </g>
-  );
-});
-
-function Grid({ view, w, h }: { view: View; w: number; h: number }) {
-  const steps = [100, 500, 1000, 5000, 10000];
-  const step = steps.find((s) => s * view.zoom >= 9) ?? 10000;
-  const x0 = view.cx - w / 2 / view.zoom;
-  const x1 = view.cx + w / 2 / view.zoom;
-  const y0 = view.cy - h / 2 / view.zoom;
-  const y1 = view.cy + h / 2 / view.zoom;
-  const lines: React.ReactNode[] = [];
-  const major = step * (step === 100 || step === 1000 ? 10 : 2);
-  for (let x = Math.ceil(x0 / step) * step; x <= x1; x += step) {
-    lines.push(<line key={`x${x}`} x1={x} y1={y0} x2={x} y2={y1} stroke={x % major === 0 ? '#d5dae1' : '#eceff3'} strokeWidth={1 / view.zoom} />);
-  }
-  for (let y = Math.ceil(y0 / step) * step; y <= y1; y += step) {
-    lines.push(<line key={`y${y}`} x1={x0} y1={y} x2={x1} y2={y} stroke={y % major === 0 ? '#d5dae1' : '#eceff3'} strokeWidth={1 / view.zoom} />);
-  }
-  return <g style={{ pointerEvents: 'none' }}>{lines}</g>;
-}
-
-/** Габариты содержимого для «показать всё». */
-function contentBBox(project: Project, level: Level | undefined) {
-  const pts: Vec2[] = [];
-  if (level) {
-    for (const w of level.walls) pts.push(w.a, w.b);
-    for (const it of level.items) pts.push({ x: it.x, y: it.y });
-    if (level.underlay?.visible) {
-      const u = level.underlay;
-      pts.push({ x: u.x, y: u.y }, { x: u.x + u.pxW * u.scale, y: u.y + u.pxH * u.scale });
-    }
-  }
-  if (project.site) pts.push(...project.site.boundary);
-  if (!pts.length) return { minX: -3000, minY: -3000, maxX: 9000, maxY: 7000 };
-  return bbox(pts);
-}
 
 export function Editor2D() {
   const { t, ls } = useT();
   const project = useProject((s) => s.project);
   const tool = useUi((s) => s.tool);
   const toolKind = useUi((s) => s.toolKind);
-  const selection = useUi((s) => s.selection);
+  const multi = useUi((s) => s.multi);
+  const mode = useUi((s) => s.mode);
   const activeLevelId = useUi((s) => s.activeLevelId);
   const layers = useUi((s) => s.layers);
   const autoDims = useUi((s) => s.autoDims);
   const focus = useUi((s) => s.focus);
+  const cursor = useUi((s) => s.cursor);
+  const wallThickness = useUi((s) => s.wallDefaults.thickness);
   const level = project.levels.find((l) => l.id === activeLevelId) ?? project.levels[0];
   const levelIdx = project.levels.indexOf(level);
   const below = levelIdx > 0 ? project.levels[levelIdx - 1] : null;
+  const geom = useMemo(() => geomOf(level), [level.walls, level.openings]); // eslint-disable-line react-hooks/exhaustive-deps
+  const belowGeom = useMemo(() => (below ? geomOf(below) : null), [below?.walls, below?.openings]); // eslint-disable-line react-hooks/exhaustive-deps
+  const hitPolys = useMemo(() => wallHitPolys(level), [level.walls, level.openings]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const svgRef = useRef<SVGSVGElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -184,18 +66,27 @@ export function Editor2D() {
   pvRef.current = pv;
   const drag = useRef<Drag | null>(null);
   const spaceDown = useRef(false);
+  const lastClick = useRef<{ x: number; y: number } | null>(null);
+  const [marquee, setMarquee] = useState<{ a: Vec2; b: Vec2 } | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; sel: Sel | null; world: Vec2 } | null>(null);
   const [calibValue, setCalibValue] = useState('');
 
   const k = PX_PER_PAPER_MM / view.zoom;
+  const store = useProject.getState;
+  const ui = useUi.getState;
 
-  // ── размеры и «показать всё» ──
+  // ── размеры окна и авто-вписывание ──
+  const [measured, setMeasured] = useState(false);
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setSize({ w: Math.max(100, el.clientWidth), h: Math.max(100, el.clientHeight) }));
+    const measure = () => {
+      setSize({ w: Math.max(100, el.clientWidth), h: Math.max(100, el.clientHeight) });
+      setMeasured(true);
+    };
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
-    setSize({ w: Math.max(100, el.clientWidth), h: Math.max(100, el.clientHeight) });
+    measure();
     return () => ro.disconnect();
   }, []);
 
@@ -204,33 +95,37 @@ export function Editor2D() {
     const lvl = p.levels.find((l) => l.id === useUi.getState().activeLevelId) ?? p.levels[0];
     const bb = contentBBox(p, lvl);
     const { w, h } = sizeRef.current;
-    const zoom = Math.min((w - 80) / Math.max(1000, bb.maxX - bb.minX), (h - 80) / Math.max(1000, bb.maxY - bb.minY));
+    const zoom = Math.min((w - 80) / Math.max(1000, bb.maxX - bb.minX), (h - 110) / Math.max(1000, bb.maxY - bb.minY));
     setView({ cx: (bb.minX + bb.maxX) / 2, cy: (bb.minY + bb.maxY) / 2, zoom: Math.max(0.004, Math.min(1.5, zoom)) });
   }, []);
 
-  const fittedFor = useRef('');
+  // Пока пользователь сам не менял вид, план автоматически вписывается (в т. ч. после первого измерения окна).
+  const autoFit = useRef(true);
   useEffect(() => {
-    const key = `${project.id}|${level?.id}|${size.w > 100}`;
-    if (fittedFor.current !== key && size.w > 100) {
-      fittedFor.current = key;
-      fit();
+    autoFit.current = true;
+  }, [project.id, level?.id]);
+  useEffect(() => {
+    if (measured && autoFit.current) fit();
+  }, [project.id, level?.id, size.w, size.h, measured, fit]);
+  useEffect(() => {
+    if (focus) {
+      autoFit.current = false;
+      setView((v) => ({ ...v, cx: focus.point.x, cy: focus.point.y, zoom: Math.max(v.zoom, 0.1) }));
     }
-  }, [project.id, level?.id, size.w, fit]);
-
-  useEffect(() => {
-    if (focus) setView((v) => ({ ...v, cx: focus.point.x, cy: focus.point.y, zoom: Math.max(v.zoom, 0.1) }));
   }, [focus]);
-
   useEffect(() => {
-    const onFit = () => fit();
+    const onFit = () => {
+      autoFit.current = true;
+      fit();
+    };
     window.addEventListener('hb-fit', onFit);
     return () => window.removeEventListener('hb-fit', onFit);
   }, [fit]);
 
-  // сброс предпросмотра при смене инструмента
+  // сброс предпросмотра при смене инструмента или режима
   useEffect(() => {
     setPv(emptyPreview);
-  }, [tool, toolKind, activeLevelId]);
+  }, [tool, toolKind, activeLevelId, mode]);
 
   const toWorld = (e: { clientX: number; clientY: number }): Vec2 => {
     const r = svgRef.current!.getBoundingClientRect();
@@ -238,15 +133,21 @@ export function Editor2D() {
     return { x: (e.clientX - r.left - r.width / 2) / v.zoom + v.cx, y: (e.clientY - r.top - r.height / 2) / v.zoom + v.cy };
   };
 
-  // ── колесо: масштаб к курсору ──
+  // ── колесо: мышь — масштаб к курсору; тачпад двумя пальцами — панорама, щипок — масштаб ──
   useEffect(() => {
     const el = svgRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      autoFit.current = false;
       const v = viewRef.current;
+      const trackpadPan = !e.ctrlKey && e.deltaMode === 0 && (e.deltaX !== 0 || (Math.abs(e.deltaY) < 40 && !Number.isInteger(e.deltaY)));
+      if (trackpadPan) {
+        setView({ ...v, cx: v.cx + e.deltaX / v.zoom, cy: v.cy + e.deltaY / v.zoom });
+        return;
+      }
       const r = el.getBoundingClientRect();
-      const f = Math.exp(-e.deltaY * 0.0015);
+      const f = Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015));
       const zoom = Math.max(0.004, Math.min(2.5, v.zoom * f));
       const mx = e.clientX - r.left - r.width / 2;
       const my = e.clientY - r.top - r.height / 2;
@@ -259,31 +160,31 @@ export function Editor2D() {
   }, []);
 
   // ── привязка ──
-  const snap = (raw: Vec2, opts: { from?: Vec2 | null; points?: Vec2[]; excludeWalls?: Set<string>; excludePoints?: Vec2[]; grid?: number; noWalls?: boolean } = {}): SnapResult => {
-    const ui = useUi.getState();
-    const p = useProject.getState().project;
-    const lvl = p.levels.find((l) => l.id === ui.activeLevelId) ?? p.levels[0];
+  const curLevel = (): Level => {
+    const p = store().project;
+    return p.levels.find((l) => l.id === ui().activeLevelId) ?? p.levels[0];
+  };
+  const snap = (raw: Vec2, opts: { from?: Vec2 | null; points?: Vec2[]; grid?: number; noWalls?: boolean } = {}): SnapResult => {
+    const p = store().project;
     return snapPoint(raw, {
-      walls: opts.noWalls ? [] : lvl.walls,
+      walls: opts.noWalls ? [] : geomOf(curLevel()).walls,
       points: opts.points,
-      grid: ui.snapGrid ? (opts.grid ?? p.gridStep) : 0,
+      grid: ui().snapGrid ? (opts.grid ?? p.gridStep) : 0,
       from: opts.from,
-      angle: ui.snapAngle,
+      angle: ui().snapAngle,
       tol: 10 / viewRef.current.zoom,
-      excludeWalls: opts.excludeWalls,
-      excludePoints: opts.excludePoints,
     });
   };
 
   const scopeOfKind = (def: { scope?: 'level' | 'site'; layer: LayerId } | undefined): string => (def?.scope === 'site' || def?.layer === 'landscape' ? 'site' : level.id);
 
-  /** Точки привязки для трасс/размеров: центры объектов, углы помещений. */
+  /** Точки привязки для трасс/размеров: центры объектов, углы помещений, края проёмов. */
   const extraPoints = (kind: 'dim' | 'route'): Vec2[] => {
     const pts: Vec2[] = [];
     if (kind === 'dim') {
       for (const r of level.rooms) pts.push(...r.polygon);
-      for (const o of level.openings) {
-        const w = level.walls.find((x) => x.id === o.wallId);
+      for (const o of geom.openings) {
+        const w = geom.walls.find((x) => x.id === o.wallId);
         if (w) {
           const g = openingGeom(o, w);
           pts.push(g.p1, g.p2);
@@ -297,15 +198,19 @@ export function Editor2D() {
     return pts;
   };
 
-  // ── действия ──
-  const store = useProject.getState;
-  const ui = useUi.getState;
+  /** Отношения отрезка к стенам (кроме исключённых) — для индикаторов 90°/∥. */
+  const relOf = (a: Vec2, b: Vec2, exclude: Set<string> = new Set()) => segRelations(a, b, geomOf(curLevel()).walls.filter((w) => !exclude.has(baseWallId(w.id))));
 
-  const addWall = (a: Vec2, b: Vec2) => {
-    if (dist(a, b) < 50) return;
+  // ── действия ──
+  const wallOpts = () => {
     const wd = ui().wallDefaults;
+    return { thickness: wd.thickness, material: wd.material, loadBearing: wd.loadBearing, exterior: wd.exterior, status: defaultWallStatus(store().project) };
+  };
+  const addWall = (a: Vec2, b: Vec2, arc?: number) => {
+    if (dist(a, b) < 50) return;
+    const w = createWall(a, b, { ...wallOpts(), ...(arc ? { arc } : {}) });
     store().update((d) => {
-      getLevel(d, level.id)?.walls.push(createWall(a, b, { thickness: wd.thickness, material: wd.material, loadBearing: wd.loadBearing, exterior: wd.exterior }));
+      getLevel(d, level.id)?.walls.push(w);
     });
   };
 
@@ -313,24 +218,25 @@ export function Editor2D() {
     const p = pvRef.current;
     const kind = ui().toolKind;
     if (!kind) return;
-    if (ui().tool === 'route' && p.pts.length >= 2) {
+    const pts = p.pts.map((q) => ({ x: Math.round(q.x), y: Math.round(q.y) }));
+    if (ui().tool === 'route' && pts.length >= 2) {
       const def = routeDef(kind);
       const scope = scopeOfKind(def);
       const id = newId('rt');
       store().update((d) => {
-        getContainer(d, scope)?.routes.push({ id, kind, points: p.pts.map((q) => ({ x: Math.round(q.x), y: Math.round(q.y) })), params: { ...(def?.defaults ?? {}) } });
+        getContainer(d, scope)?.routes.push({ id, kind, points: pts, params: { ...(def?.defaults ?? {}) } });
       });
-      ui().select({ type: 'route', id, scope });
       ui().setTool('select');
-    } else if (ui().tool === 'zone' && p.pts.length >= 3) {
+      selectWithMode({ type: 'route', id, scope });
+    } else if (ui().tool === 'zone' && pts.length >= 3) {
       const def = zoneDef(kind);
       const scope = scopeOfKind(def);
       const id = newId('zn');
       store().update((d) => {
-        getContainer(d, scope)?.zones.push({ id, kind, points: p.pts.map((q) => ({ x: Math.round(q.x), y: Math.round(q.y) })), params: { ...(def?.defaults ?? {}) } });
+        getContainer(d, scope)?.zones.push({ id, kind, points: pts, params: { ...(def?.defaults ?? {}) } });
       });
-      ui().select({ type: 'zone', id, scope });
       ui().setTool('select');
+      selectWithMode({ type: 'zone', id, scope });
     }
     setPv(emptyPreview);
   };
@@ -348,6 +254,7 @@ export function Editor2D() {
         if (drag.current && drag.current.kind !== 'pan') {
           store().cancel();
           drag.current = null;
+          setMarquee(null);
         }
         if (p.pts.length || p.typed) setPv({ ...emptyPreview, cur: p.cur });
         else if (tl !== 'select') ui().setTool('select');
@@ -388,44 +295,35 @@ export function Editor2D() {
     };
   }); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const hitSel = (target: EventTarget | null): Sel | null => {
-    const el = (target as Element | null)?.closest?.('[data-t]') as HTMLElement | SVGElement | null;
-    if (!el) return null;
-    const ds = (el as HTMLElement).dataset;
-    return { type: ds.t as Sel['type'], id: ds.id ?? '', scope: ds.scope ?? level.id };
-  };
-
-  /** Объект под точкой экрана (нужно для dblclick: при захвате указателя событие приходит на сам SVG). */
-  const hitAt = (clientX: number, clientY: number): Sel | null => {
+  /** Все объекты под точкой экрана, сверху вниз, без повторов (перебор; dblclick при захвате указателя). */
+  const hitsAt = (clientX: number, clientY: number): Sel[] => {
+    const out: Sel[] = [];
     for (const el of document.elementsFromPoint(clientX, clientY)) {
       if (!svgRef.current?.contains(el)) continue;
-      const sel = hitSel(el);
-      if (sel) return sel;
+      const g = el.closest('[data-t]') as HTMLElement | null;
+      if (!g) continue;
+      const sel: Sel = { type: g.dataset.t as Sel['type'], id: g.dataset.id ?? '', scope: g.dataset.scope ?? level.id };
+      if (!out.some((s) => sameSel(s, sel))) out.push(sel);
     }
-    return null;
+    // подпись помещения может накрывать стену или проём — конкретный элемент важнее помещения
+    return [...out.filter((s) => s.type !== 'room'), ...out.filter((s) => s.type === 'room')];
   };
 
-  const itemGhost = (raw: Vec2, kind: string): Item => {
-    const def = itemDef(kind);
-    const scope = scopeOfKind(def);
-    const it = makeItem(kind, raw, pvRef.current.ghost?.rot ?? 0, level, ui().toolParams);
-    const s = itemSize(it);
-    const g = ui().snapGrid ? 50 : 1;
-    it.x = Math.round(raw.x / g) * g;
-    it.y = Math.round(raw.y / g) * g;
-    if (scope !== 'site' && (def?.mount === 'wall' || !def)) {
-      const sn = snapItemToWalls(raw, s.w, s.d, it.rot, level.walls, 250);
-      if (sn.snapped) Object.assign(it, { x: sn.x, y: sn.y, rot: sn.rot });
-    } else if (scope !== 'site' && def && def.layer !== 'furniture' && def.mount !== 'ceiling') {
-      // инженерные точки липнут к грани стены
-      const nw = nearestWall(raw, level.walls, 200);
-      if (nw && nw.t > 0 && nw.t < 1 && nw.dist > 1) {
-        const u = norm(sub(raw, nw.point));
-        const c = add(nw.point, mul(u, nw.wall.thickness / 2));
-        Object.assign(it, { x: Math.round(c.x), y: Math.round(c.y), rot: (Math.round(angleDeg(u) - 90) + 360) % 360 });
-      }
-    }
-    return it;
+  const itemGhost = (raw: Vec2, kind: string, params = ui().toolParams): Item =>
+    poseNewItem(level, kind, raw, params, { rot: pvRef.current.ghost?.rot ?? 0, grid: ui().snapGrid ? 50 : 1, site: scopeOfKind(itemDef(kind)) === 'site' });
+
+  /** Проём под курсором (инструменты двери/окна/проёма), в т. ч. на дуговой стене. */
+  const openingAt = (world: Vec2, kind: Opening['kind']): Opening | null => {
+    const hit = locateOnWall(level, world, 500);
+    if (!hit) return null;
+    const o = createOpening(hit.wall.id, kind, 0, kind === 'door' ? { width: 800 } : {});
+    const L = wallLen(hit.wall);
+    if (L < o.width + 100) o.width = Math.max(300, L - 200);
+    o.pos = clampPos(Math.round(hit.pos / 10) * 10, o.width, L);
+    o.swing = hit.side;
+    o.hinge = hit.pos < o.pos ? 'a' : 'b';
+    o.id = 'preview';
+    return o;
   };
 
   // ── указатель ──
@@ -435,7 +333,7 @@ export function Editor2D() {
     const svg = svgRef.current!;
     if (e.button === 1 || (e.button === 0 && spaceDown.current)) {
       svg.setPointerCapture(e.pointerId);
-      drag.current = { kind: 'pan', sx: e.clientX, sy: e.clientY, cx0: view.cx, cy0: view.cy, moved: false, deselect: false };
+      drag.current = { kind: 'pan', sx: e.clientX, sy: e.clientY, cx0: view.cx, cy0: view.cy, moved: false };
       return;
     }
     if (e.button !== 0) return;
@@ -443,25 +341,53 @@ export function Editor2D() {
     const p = pvRef.current;
 
     if (tl === 'select') {
+      const sels = ui().multi;
       const hEl = (e.target as Element).closest('[data-h]') as SVGElement | null;
-      if (hEl && selection) {
-        const h = hEl.dataset.h!;
-        const i = Number(hEl.dataset.i ?? 0);
+      if (hEl && sels.length === 1) {
         svg.setPointerCapture(e.pointerId);
-        drag.current = { kind: 'handle', sel: selection, h, i, start: world, orig: { x: Number(hEl.dataset.x), y: Number(hEl.dataset.y) }, moved: false };
+        drag.current = { kind: 'handle', sel: sels[0], h: hEl.dataset.h!, i: Number(hEl.dataset.i ?? 0), start: world, orig: { x: Number(hEl.dataset.x), y: Number(hEl.dataset.y) }, moved: false };
         store().begin();
         return;
       }
-      const sel = hitSel(e.target);
+      const hits = hitsAt(e.clientX, e.clientY);
+      if (!hits.length) {
+        // пустое место: рамка выделения
+        svg.setPointerCapture(e.pointerId);
+        drag.current = { kind: 'marquee', start: world, additive: e.shiftKey, moved: false };
+        return;
+      }
+      if (e.shiftKey) {
+        // Shift+клик: добавить объект в выделение или убрать из него
+        ui().toggleSelect(hits[0]);
+        lastClick.current = null;
+        return;
+      }
       svg.setPointerCapture(e.pointerId);
-      if (sel) {
-        ui().select(sel);
-        if (sel.type !== 'room' && sel.type !== 'site') {
-          drag.current = { kind: 'move', sel, start: world, moved: false };
-          store().begin();
-        } else drag.current = { kind: 'pan', sx: e.clientX, sy: e.clientY, cx0: view.cx, cy0: view.cy, moved: false, deselect: false };
+      const startMove = (list: Sel[], cycle: Sel | null) => {
+        drag.current = { kind: 'move', sels: list, start: world, moved: false, cycle };
+        store().begin();
+      };
+      if (e.altKey && hits.length > 1) {
+        // Alt+клик: следующий объект под курсором
+        const idx = hits.findIndex((h) => sameSel(h, ui().selection));
+        const next = hits[(idx + 1) % hits.length];
+        ui().select(next);
+        startMove([next], null);
+        return;
+      }
+      const inSel = hits.find((h) => sels.some((m) => sameSel(m, h)));
+      if (inSel) {
+        // повторный клик в ту же точку — перебор объектов под курсором (при отпускании без сдвига)
+        let cycle: Sel | null = null;
+        const lc = lastClick.current;
+        if (sels.length === 1 && hits.length > 1 && lc && Math.hypot(lc.x - e.clientX, lc.y - e.clientY) < 5) {
+          const idx = hits.findIndex((h) => sameSel(h, sels[0]));
+          cycle = hits[(idx + 1) % hits.length];
+        }
+        startMove(sels, cycle);
       } else {
-        drag.current = { kind: 'pan', sx: e.clientX, sy: e.clientY, cx0: view.cx, cy0: view.cy, moved: false, deselect: true };
+        ui().select(hits[0]);
+        startMove([hits[0]], null);
       }
       return;
     }
@@ -479,6 +405,22 @@ export function Editor2D() {
       return;
     }
 
+    if (tl === 'arc') {
+      // дуговая стена: начало, конец, затем точка выгиба
+      if (p.pts.length < 2) {
+        const sn = snap(world, { from: p.pts[0] ?? null });
+        const pt = { x: Math.round(sn.point.x), y: Math.round(sn.point.y) };
+        if (p.pts.length === 1 && dist(p.pts[0], pt) < 50) return;
+        setPv({ ...emptyPreview, pts: [...p.pts, pt], cur: pt });
+      } else {
+        const [a, b] = p.pts;
+        const s = Math.round(dot(sub(world, mid(a, b)), perp(norm(sub(b, a)))) / 10) * 10;
+        addWall(a, b, Math.abs(s) >= 40 ? s : undefined);
+        setPv(emptyPreview);
+      }
+      return;
+    }
+
     if (tl === 'room') {
       const sn = snap(world);
       const pt = { x: Math.round(sn.point.x), y: Math.round(sn.point.y) };
@@ -486,11 +428,11 @@ export function Editor2D() {
       else {
         const a = p.pts[0];
         if (Math.abs(a.x - pt.x) > 300 && Math.abs(a.y - pt.y) > 300) {
-          const wd = ui().wallDefaults;
           const c = [a, { x: pt.x, y: a.y }, pt, { x: a.x, y: pt.y }];
+          const opts = wallOpts();
           store().update((d) => {
             const l = getLevel(d, level.id);
-            for (let i = 0; i < 4; i++) l?.walls.push(createWall(c[i], c[(i + 1) % 4], { thickness: wd.thickness, material: wd.material, loadBearing: wd.loadBearing, exterior: wd.exterior }));
+            for (let i = 0; i < 4; i++) l?.walls.push(createWall(c[i], c[(i + 1) % 4], opts));
           });
         }
         setPv(emptyPreview);
@@ -499,8 +441,9 @@ export function Editor2D() {
     }
 
     if (tl === 'door' || tl === 'window' || tl === 'portal') {
-      if (p.opening) {
-        const o = { ...p.opening, id: newId('o') };
+      const o0 = p.opening ?? openingAt(world, tl);
+      if (o0) {
+        const o = { ...o0, id: newId('o') };
         store().update((d) => {
           getLevel(d, level.id)?.openings.push(o);
         });
@@ -524,6 +467,13 @@ export function Editor2D() {
       return;
     }
 
+    if (tl === 'measure') {
+      // рулетка: две точки; следующий клик начинает новый замер
+      const sn = snap(world, { points: extraPoints('dim'), grid: 10 });
+      setPv({ ...emptyPreview, pts: p.pts.length === 1 ? [p.pts[0], sn.point] : [sn.point], cur: sn.point });
+      return;
+    }
+
     if (tl === 'item' && toolKind) {
       const it = p.ghost ?? itemGhost(world, toolKind);
       const scope = scopeOfKind(itemDef(toolKind));
@@ -531,8 +481,10 @@ export function Editor2D() {
       store().update((d) => {
         getContainer(d, scope)?.items.push(placed);
       });
-      ui().select({ type: 'item', id: placed.id, scope });
-      if (!e.shiftKey) ui().setTool('select');
+      if (!e.shiftKey) {
+        ui().setTool('select');
+        selectWithMode({ type: 'item', id: placed.id, scope });
+      }
       return;
     }
 
@@ -566,37 +518,41 @@ export function Editor2D() {
         const dx = e.clientX - dg.sx;
         const dy = e.clientY - dg.sy;
         if (Math.abs(dx) + Math.abs(dy) > 3) dg.moved = true;
-        if (dg.moved) setView((v) => ({ ...v, cx: dg.cx0 - dx / v.zoom, cy: dg.cy0 - dy / v.zoom }));
+        if (dg.moved) {
+          autoFit.current = false;
+          setView((v) => ({ ...v, cx: dg.cx0 - dx / v.zoom, cy: dg.cy0 - dy / v.zoom }));
+        }
         return;
       }
       const delta = sub(world, dg.start);
       if (!dg.moved && Math.hypot(delta.x, delta.y) * view.zoom < 4) return;
       dg.moved = true;
-      if (dg.kind === 'move') applyMove(dg.sel, world, delta, e);
+      if (dg.kind === 'marquee') setMarquee({ a: dg.start, b: world });
+      else if (dg.kind === 'move') applyMove(dg.sels, world, delta, e);
       else applyHandle(dg, world, e);
       return;
     }
     const tl = ui().tool;
     const p = pvRef.current;
     if (tl === 'wall' || tl === 'room') {
-      const sn = snap(world, { from: tl === 'wall' ? (p.pts[0] ?? null) : null });
-      setPv((prev) => ({ ...prev, cur: sn.point, snap: sn }));
+      const start = tl === 'wall' ? (p.pts[0] ?? null) : null;
+      const sn = snap(world, { from: start });
+      const rel = start && dist(start, sn.point) > 20 ? { a: start, b: sn.point, r: relOf(start, sn.point) } : null;
+      setPv((prev) => ({ ...prev, cur: sn.point, snap: sn, rel }));
+    } else if (tl === 'arc') {
+      if (p.pts.length < 2) {
+        const sn = snap(world, { from: p.pts[0] ?? null });
+        setPv((prev) => ({ ...prev, cur: sn.point, snap: sn }));
+      } else setPv((prev) => ({ ...prev, cur: world, snap: null }));
     } else if (tl === 'door' || tl === 'window' || tl === 'portal') {
-      const nw = nearestWall(world, level.walls, 500);
-      if (nw) {
-        const o = createOpening(nw.wall.id, tl, 0, tl === 'door' ? { width: 800 } : {});
-        const L = wallLength(nw.wall);
-        if (L < o.width + 100) o.width = Math.max(300, L - 200);
-        o.pos = clampOpeningPos(Math.round((nw.t * L) / 10) * 10, o.width, nw.wall);
-        const side = dot(sub(world, nw.point), perp(wallDir(nw.wall)));
-        o.swing = side >= 0 ? 'L' : 'R';
-        o.hinge = nw.t * L < o.pos ? 'a' : 'b';
-        o.id = 'preview';
-        setPv((prev) => ({ ...prev, opening: o, cur: world }));
-      } else setPv((prev) => ({ ...prev, opening: null, cur: world }));
+      const o = openingAt(world, tl);
+      setPv((prev) => ({ ...prev, opening: o, cur: world }));
     } else if (tl === 'dim') {
       const sn = snap(world, { points: extraPoints('dim'), grid: 10 });
       setPv((prev) => ({ ...prev, cur: p.pts.length === 2 ? world : sn.point, snap: p.pts.length === 2 ? null : sn }));
+    } else if (tl === 'measure') {
+      const sn = snap(world, { points: extraPoints('dim'), grid: 10 });
+      setPv((prev) => ({ ...prev, cur: sn.point, snap: sn }));
     } else if (tl === 'item' && toolKind) {
       const ghost = itemGhost(world, toolKind);
       setPv((prev) => ({ ...prev, ghost, cur: world }));
@@ -610,11 +566,19 @@ export function Editor2D() {
     ui().set({ cursor: world });
   };
 
-  const applyMove = (sel: Sel, world: Vec2, delta: Vec2, e: React.PointerEvent) => {
+  const applyMove = (sels: Sel[], world: Vec2, delta: Vec2, e: React.PointerEvent) => {
     const base = store().txBase;
     if (!base) return;
     const grid = ui().snapGrid ? base.gridStep : 1;
     const rg = (x: number, g = grid) => Math.round(x / g) * g;
+    if (sels.length > 1) {
+      // группа: общий сдвиг по сетке; стены тянут примыкающие узлы, проёмы едут со стенами
+      const d = { x: rg(delta.x, grid / 2), y: rg(delta.y, grid / 2) };
+      const movable = sels.filter((s) => s.type !== 'room' && s.type !== 'site' && s.type !== 'opening');
+      store().transient((dr) => moveEntities(dr, movable, d));
+      return;
+    }
+    const sel = sels[0];
     if (sel.type === 'wall') {
       const w0 = getLevel(base, sel.scope)?.walls.find((w) => w.id === sel.id);
       if (!w0) return;
@@ -630,50 +594,61 @@ export function Editor2D() {
         const l = getLevel(dr, sel.scope);
         if (l) translateWall(l, sel.id, d);
       });
+      const a = add(w0.a, d);
+      const b = add(w0.b, d);
+      setPv({ ...emptyPreview, rel: { a, b, r: relOf(a, b, new Set([sel.id])) } });
     } else if (sel.type === 'opening') {
       const lv = getLevel(base, sel.scope);
       const o0 = lv?.openings.find((o) => o.id === sel.id);
       if (!lv || !o0) return;
-      const nw = nearestWall(world, lv.walls, 600);
-      if (!nw) return;
-      const L = wallLength(nw.wall);
-      const pos = clampOpeningPos(Math.round((nw.t * L) / 10) * 10, o0.width, nw.wall);
+      const hit = locateOnWall({ walls: lv.walls, openings: lv.openings.filter((o) => o.id !== sel.id) }, world, 600);
+      if (!hit) return;
+      const pos = clampPos(Math.round(hit.pos / 10) * 10, o0.width, wallLen(hit.wall));
       store().transient((dr) => {
         const o = getLevel(dr, sel.scope)?.openings.find((x) => x.id === sel.id);
         if (o) {
-          o.wallId = nw.wall.id;
+          o.wallId = hit.wall.id;
           o.pos = pos;
         }
       });
     } else if (sel.type === 'item') {
-      const c0 = getContainer(base, sel.scope)?.items.find((i) => i.id === sel.id);
-      if (!c0) return;
+      const cont = getContainer(base, sel.scope);
+      const c0 = cont?.items.find((i) => i.id === sel.id);
+      if (!c0 || !cont) return;
       const def = itemDef(c0.kind);
       const s = itemSize(c0);
       let pose = { x: rg(c0.x + delta.x, grid / 2), y: rg(c0.y + delta.y, grid / 2), rot: c0.rot };
       const lv = sel.scope === 'site' ? null : getLevel(base, sel.scope);
+      const others = cont.items.filter((i) => i.id !== sel.id && layerOfItem(i) === layerOfItem(c0)).map(itemBox);
+      const tol = 7 / view.zoom;
+      // выравнивание по краям и центрам соседних объектов
+      if (!e.altKey && others.length) {
+        const al = alignSnap(itemBox({ ...c0, ...pose }), others, tol);
+        pose = { ...pose, x: Math.round(pose.x + al.dx), y: Math.round(pose.y + al.dy) };
+      }
+      const gw = lv ? geomOf(lv).walls : [];
       if (lv && !e.altKey && (def?.mount === 'wall' || !def)) {
-        const sn = snapItemToWalls({ x: c0.x + delta.x, y: c0.y + delta.y }, s.w, s.d, c0.rot, lv.walls, 200);
-        if (sn.snapped) pose = sn;
+        const sn = snapItemToWalls({ x: c0.x + delta.x, y: c0.y + delta.y }, s.w, s.d, c0.rot, gw, 200);
+        if (sn.snapped) {
+          // у стены: поперёк стены положение задаёт стена, вдоль — сохраняется выравнивание по соседям
+          const al = alignSnap(itemBox({ ...c0, x: sn.x, y: sn.y, rot: sn.rot }), others, tol);
+          const along = sn.rot % 180 === 0 ? { x: al.dx, y: 0 } : sn.rot % 180 === 90 ? { x: 0, y: al.dy } : { x: 0, y: 0 };
+          pose = { x: Math.round(sn.x + along.x), y: Math.round(sn.y + along.y), rot: sn.rot };
+        }
       } else if (lv && !e.altKey && def && def.layer !== 'furniture' && def.mount !== 'ceiling') {
         const raw = { x: c0.x + delta.x, y: c0.y + delta.y };
-        const nw = nearestWall(raw, lv.walls, 200);
-        if (nw && nw.t > 0 && nw.t < 1 && nw.dist > 1) {
-          const u = norm(sub(raw, nw.point));
-          const c = add(nw.point, mul(u, nw.wall.thickness / 2));
-          pose = { x: Math.round(c.x), y: Math.round(c.y), rot: (Math.round(angleDeg(u) - 90) + 360) % 360 };
+        const hit = locateOnWall(lv, raw, 200);
+        if (hit && hit.dist > 1) {
+          const u = norm(sub(raw, hit.point));
+          const c = add(hit.point, mul(u, hit.seg.thickness / 2));
+          pose = { x: Math.round(c.x), y: Math.round(c.y), rot: wallFacingRot(hit.seg, raw) };
         }
       }
+      const guides = others.length ? alignSnap(itemBox({ ...c0, ...pose }), others, 1.5).guides : [];
+      setPv({ ...emptyPreview, guides });
       store().transient((dr) => {
         const it = getContainer(dr, sel.scope)?.items.find((i) => i.id === sel.id);
         if (it) Object.assign(it, pose);
-      });
-    } else if (sel.type === 'route' || sel.type === 'zone') {
-      const d = { x: rg(delta.x, grid / 2), y: rg(delta.y, grid / 2) };
-      store().transient((dr) => {
-        const c = getContainer(dr, sel.scope);
-        const ent = sel.type === 'route' ? c?.routes.find((r) => r.id === sel.id) : c?.zones.find((z) => z.id === sel.id);
-        if (ent) ent.points = ent.points.map((q) => add(q, d));
       });
     } else if (sel.type === 'dim') {
       const d0 = getLevel(base, sel.scope)?.dims.find((x) => x.id === sel.id);
@@ -683,6 +658,9 @@ export function Editor2D() {
         const dm = getLevel(dr, sel.scope)?.dims.find((x) => x.id === sel.id);
         if (dm) dm.offset = Math.round(d0.offset + dot(delta, n));
       });
+    } else if (sel.type === 'route' || sel.type === 'zone') {
+      const d = { x: rg(delta.x, grid / 2), y: rg(delta.y, grid / 2) };
+      store().transient((dr) => moveEntities(dr, [sel], d));
     }
   };
 
@@ -697,17 +675,12 @@ export function Editor2D() {
       const orig = dg.h === 'wa' ? w0.a : w0.b;
       const other = dg.h === 'wa' ? w0.b : w0.a;
       const attached = new Set(lv.walls.filter((w) => eq(w.a, orig, 1) || eq(w.b, orig, 1)).map((w) => w.id));
-      const sn = snapPoint(world, {
-        walls: lv.walls,
-        grid: ui().snapGrid ? base.gridStep : 0,
-        from: other,
-        angle: ui().snapAngle && !e.shiftKey,
-        tol: 10 / view.zoom,
-        excludeWalls: attached,
-        excludePoints: [orig],
-      });
+      const free = geomOf(lv).walls.filter((w) => !attached.has(baseWallId(w.id)));
+      const sn = snapPoint(world, { walls: free, grid: ui().snapGrid ? base.gridStep : 0, from: other, angle: ui().snapAngle && !e.shiftKey, tol: 10 / view.zoom, excludePoints: [orig] });
       const to = { x: Math.round(sn.point.x), y: Math.round(sn.point.y) };
-      setPv({ ...emptyPreview, snap: sn, cur: to });
+      const a = dg.h === 'wa' ? to : w0.a;
+      const b = dg.h === 'wa' ? w0.b : to;
+      setPv({ ...emptyPreview, snap: sn, cur: to, rel: dist(a, b) > 20 ? { a, b, r: segRelations(a, b, free) } : null });
       store().transient((dr) => {
         const l = getLevel(dr, sel.scope);
         if (!l) return;
@@ -715,6 +688,17 @@ export function Editor2D() {
           const w = l.walls.find((x) => x.id === sel.id);
           if (w) w[dg.h === 'wa' ? 'a' : 'b'] = to;
         } else moveNode(l, orig, to);
+      });
+    } else if (dg.h === 'wm') {
+      // ручка в середине стены: стрела дуги (у нуля — прямая)
+      const w0 = getLevel(base, sel.scope)?.walls.find((w) => w.id === sel.id);
+      if (!w0) return;
+      const s = Math.round(((w0.arc ?? 0) + dot(sub(world, dg.start), perp(wallDir(w0)))) / 10) * 10;
+      store().transient((dr) => {
+        const w = getLevel(dr, sel.scope)?.walls.find((x) => x.id === sel.id);
+        if (!w) return;
+        if (Math.abs(s) < 40) delete w.arc;
+        else w.arc = s;
       });
     } else if (dg.h === 'pt') {
       const sn = snap(world, { grid: 50, noWalls: sel.scope === 'site' || sel.type === 'site', points: sel.type === 'route' ? extraPoints('route') : undefined });
@@ -755,14 +739,35 @@ export function Editor2D() {
     } catch {
       /* ignore */
     }
-    if (!dg) return;
-    if (dg.kind === 'pan') {
-      if (!dg.moved && dg.deselect) ui().select(null);
+    if (!dg || dg.kind === 'pan') return;
+    if (dg.kind === 'marquee') {
+      setMarquee(null);
+      lastClick.current = null;
+      if (!dg.moved) {
+        if (!dg.additive) ui().select(null);
+        return;
+      }
+      // рамка: слева направо — только целиком попавшие, справа налево — все пересечённые
+      const world = toWorld(e);
+      const rect = { minX: Math.min(dg.start.x, world.x), maxX: Math.max(dg.start.x, world.x), minY: Math.min(dg.start.y, world.y), maxY: Math.max(dg.start.y, world.y) };
+      const st = ui();
+      const act = MODE_LAYERS[st.mode].filter((l) => st.layers[l].visible && !st.layers[l].locked);
+      const found = selsInRect(store().project, level.id, rect, act, world.x >= dg.start.x);
+      st.selectMany(dg.additive ? [...st.multi, ...found.filter((f) => !st.multi.some((m) => sameSel(m, f)))] : found);
       return;
     }
-    if (dg.moved) store().commit();
-    else store().cancel();
-    if (pvRef.current.snap) setPv(emptyPreview);
+    if (dg.moved) {
+      store().commit();
+      lastClick.current = null;
+    } else {
+      store().cancel();
+      if (dg.kind === 'move') {
+        if (dg.cycle) ui().select(dg.cycle);
+        lastClick.current = { x: e.clientX, y: e.clientY };
+      }
+    }
+    const p = pvRef.current;
+    if (p.snap || p.rel || p.guides.length) setPv(emptyPreview);
   };
 
   const onDoubleClick = (e: React.MouseEvent) => {
@@ -775,12 +780,12 @@ export function Editor2D() {
       finishPolyTool();
       return;
     }
-    if (tl === 'wall') {
+    if (tl === 'wall' || tl === 'arc') {
       setPv(emptyPreview);
       return;
     }
     if (tl !== 'select') return;
-    const sel = hitAt(e.clientX, e.clientY);
+    const sel = hitsAt(e.clientX, e.clientY)[0];
     if (!sel) return;
     if (sel.type === 'item') {
       const it = getContainer(project, sel.scope)?.items.find((i) => i.id === sel.id);
@@ -827,50 +832,65 @@ export function Editor2D() {
       else ui().setTool('select');
       return;
     }
-    const sel = hitSel(e.target);
-    if (sel) ui().select(sel);
+    const sel = hitsAt(e.clientX, e.clientY)[0] ?? null;
+    if (sel && !ui().multi.some((m) => sameSel(m, sel))) ui().select(sel);
     const r = wrapRef.current!.getBoundingClientRect();
     setMenu({ x: e.clientX - r.left, y: e.clientY - r.top, sel, world: toWorld(e) });
+  };
+
+  // ── перетаскивание объекта из каталога на план ──
+  const onDrop = (e: React.DragEvent) => {
+    const kind = e.dataTransfer.getData('application/x-hb-kind');
+    if (!kind) return;
+    e.preventDefault();
+    let params: Item['params'] = {};
+    try {
+      params = JSON.parse(e.dataTransfer.getData('application/x-hb-params') || '{}');
+    } catch {
+      params = {};
+    }
+    const it = { ...itemGhost(toWorld(e), kind, params), id: newId('it') };
+    const scope = scopeOfKind(itemDef(kind));
+    store().update((d) => {
+      getContainer(d, scope)?.items.push(it);
+    });
+    ui().setTool('select');
+    selectWithMode({ type: 'item', id: it.id, scope });
   };
 
   const menuEntries = (): MenuEntry[] => {
     if (!menu) return [];
     const sel = menu.sel;
-    const del: MenuEntry = { label: t('Видалити', 'Удалить'), hint: 'Del', danger: true, run: () => sel && (store().update((d) => removeEntity(d, sel)), ui().select(null)) };
-    const dup: MenuEntry = {
-      label: t('Дублювати', 'Дублировать'),
-      hint: 'Ctrl+D',
-      run: () => {
-        if (!sel) return;
-        let ns: Sel | null = null;
-        store().update((d) => {
-          ns = duplicateEntity(d, sel);
-        });
-        if (ns) ui().select(ns);
-      },
+    const many = multi.length > 1;
+    const del: MenuEntry = { label: many ? t(`Видалити (${multi.length})`, `Удалить (${multi.length})`) : t('Видалити', 'Удалить'), hint: 'Del', danger: true, run: deleteSelection };
+    const dup: MenuEntry = { label: many ? t(`Дублювати (${multi.length})`, `Дублировать (${multi.length})`) : t('Дублювати', 'Дублировать'), hint: 'Ctrl+D', run: duplicateSelection };
+    const planTool = (tl: 'wall' | 'door' | 'window') => () => {
+      ui().setMode('plan');
+      ui().setTool(tl);
     };
     if (!sel) {
       return [
-        { label: t('Показати все', 'Показать всё'), hint: 'Home', run: fit },
-        { label: t('Стіна', 'Стена'), hint: 'W', run: () => ui().setTool('wall') },
-        { label: t('Двері', 'Дверь'), hint: 'D', run: () => ui().setTool('door') },
-        { label: t('Вікно', 'Окно'), hint: 'N', run: () => ui().setTool('window') },
-        { label: t('Розмір', 'Размер'), hint: 'M', run: () => ui().setTool('dim') },
+        { label: t('Показати все', 'Показать всё'), hint: 'Home', run: () => window.dispatchEvent(new Event('hb-fit')) },
+        { label: t('Стіна', 'Стена'), hint: 'W', run: planTool('wall') },
+        { label: t('Двері', 'Дверь'), hint: 'D', run: planTool('door') },
+        { label: t('Вікно', 'Окно'), hint: 'N', run: planTool('window') },
+        { label: t('Рулетка', 'Рулетка'), hint: 'T', run: () => ui().setTool('measure') },
       ];
     }
+    if (many) return [dup, del];
     if (sel.type === 'wall') {
       const w = level.walls.find((x) => x.id === sel.id);
+      const mutW = (fn: (x: Wall) => void) => () =>
+        store().update((d) => {
+          const x = getLevel(d, sel.scope)?.walls.find((q) => q.id === sel.id);
+          if (x) fn(x);
+        });
       return [
         { label: t('Розділити стіну тут', 'Разделить стену здесь'), run: () => store().update((d) => void splitWall(getLevel(d, sel.scope)!, sel.id, menu.world)) },
         { label: t('Розвернути напрямок', 'Развернуть направление'), run: () => store().update((d) => flipWall(getLevel(d, sel.scope)!, sel.id)) },
-        {
-          label: w?.loadBearing ? t('Зробити перегородкою', 'Сделать перегородкой') : t('Зробити несучою', 'Сделать несущей'),
-          run: () =>
-            store().update((d) => {
-              const x = getLevel(d, sel.scope)?.walls.find((q) => q.id === sel.id);
-              if (x) x.loadBearing = !x.loadBearing;
-            }),
-        },
+        { label: w?.loadBearing ? t('Зробити перегородкою', 'Сделать перегородкой') : t('Зробити несучою', 'Сделать несущей'), run: mutW((x) => (x.loadBearing = !x.loadBearing)) },
+        w?.status === 'demolish' ? { label: t('Скасувати демонтаж', 'Отменить демонтаж'), run: mutW((x) => (x.status = 'existing')) } : { label: t('Позначити під демонтаж', 'Пометить под демонтаж'), run: mutW((x) => (x.status = 'demolish')) },
+        w?.arc ? { label: t('Випрямити', 'Выпрямить'), run: mutW((x) => void delete x.arc) } : { label: t('Зробити дуговою', 'Сделать дуговой'), run: mutW((x) => (x.arc = Math.round(dist(x.a, x.b) / 5))) },
         dup,
         del,
       ];
@@ -902,9 +922,7 @@ export function Editor2D() {
       if (it?.kind === 'cabinet') entries.push({ label: t('Відкрити в конструкторі', 'Открыть в конструкторе'), run: () => ui().setDialog('cabinet', String(it.params.designId)) });
       return [...entries, dup, del];
     }
-    if (sel.type === 'route' || sel.type === 'zone') {
-      return [{ label: t('Додати вершину (подвійний клік по лінії)', 'Добавить вершину (двойной клик по линии)'), run: () => undefined }, dup, del];
-    }
+    if (sel.type === 'route' || sel.type === 'zone') return [{ label: t('Додати вершину (подвійний клік по лінії)', 'Добавить вершину (двойной клик по линии)'), run: () => undefined }, dup, del];
     if (sel.type === 'dim') return [del];
     return [];
   };
@@ -912,9 +930,14 @@ export function Editor2D() {
   // ── отрисовка ──
   const vb = `${view.cx - size.w / 2 / view.zoom} ${view.cy - size.h / 2 / view.zoom} ${size.w / view.zoom} ${size.h / view.zoom}`;
   const vis = (l: LayerId) => layers[l].visible;
-  const locked = (l: LayerId) => layers[l].locked || tool !== 'select';
-  const hr = 5 / view.zoom;
+  const active = (l: LayerId) => MODE_LAYERS[mode].includes(l);
+  /** Слой некликабелен: не относится к режиму, заблокирован или выбран инструмент рисования. */
+  const locked = (l: LayerId) => !active(l) || layers[l].locked || tool !== 'select';
+  /** Слои вне режима приглушаются (стены и помещения — основа плана — остаются как есть). */
+  const dimmed = (l: LayerId) => !active(l) && l !== 'walls' && l !== 'rooms';
   const groupColors = useMemo(() => new Map(project.electrical.groups.map((g) => [g.id, g.color])), [project.electrical.groups]);
+  /** Активные слои рисуются поверх приглушённых. */
+  const byActive = <T,>(list: T[], layerOf: (x: T) => LayerId): T[] => [...list].sort((a, b) => (active(layerOf(a)) ? 1 : 0) - (active(layerOf(b)) ? 1 : 0));
 
   const scopes: { scope: string; items: Item[]; routes: Route[]; zones: Zone[] }[] = [];
   if (project.site) scopes.push({ scope: 'site', ...project.site });
@@ -925,167 +948,11 @@ export function Editor2D() {
     [project.site, project.sun, project.levels, layers.landscape.visible], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
-  const selOverlay = (): React.ReactNode => {
-    if (!selection) return null;
-    const sw = 2 / view.zoom;
-    const handle = (p: Vec2, h: string, i = 0) => (
-      <circle key={`${h}${i}`} data-h={h} data-i={i} data-x={p.x} data-y={p.y} cx={p.x} cy={p.y} r={hr} fill="#fff" stroke={COL.select} strokeWidth={sw} style={{ cursor: 'crosshair' }} />
-    );
-    if (selection.type === 'wall') {
-      const w = level.walls.find((x) => x.id === selection.id);
-      if (!w) return null;
-      const pg = wallPolygon(w, level.walls);
-      const n = perp(wallDir(w));
-      const off = w.thickness / 2 + 4 * k;
-      return (
-        <g>
-          <polygon points={pg.map((q) => `${q.x},${q.y}`).join(' ')} fill={COL.select} fillOpacity={0.25} stroke={COL.select} strokeWidth={sw} style={{ pointerEvents: 'none' }} />
-          <g style={{ pointerEvents: 'none' }}>
-            <Prims prims={dimPrims(w.a, w.b, dot(n, { x: 0, y: -1 }) >= 0 ? off : -off, k, undefined, COL.select)} k={k} />
-          </g>
-          {handle(w.a, 'wa')}
-          {handle(w.b, 'wb')}
-        </g>
-      );
-    }
-    if (selection.type === 'opening') {
-      const o = level.openings.find((x) => x.id === selection.id);
-      const w = o && level.walls.find((x) => x.id === o.wallId);
-      if (!o || !w) return null;
-      const g = openingGeom(o, w);
-      const off = (o.swing === 'L' ? -1 : 1) * (w.thickness / 2 + 4 * k);
-      return (
-        <g style={{ pointerEvents: 'none' }}>
-          <polygon points={g.quad.map((q) => `${q.x},${q.y}`).join(' ')} fill={COL.select} fillOpacity={0.3} stroke={COL.select} strokeWidth={sw} />
-          <Prims prims={[...dimPrims(w.a, g.p1, off, k, undefined, COL.select), ...dimPrims(g.p1, g.p2, off, k, undefined, COL.select), ...dimPrims(g.p2, w.b, off, k, undefined, COL.select)]} k={k} />
-        </g>
-      );
-    }
-    if (selection.type === 'room') {
-      const r = level.rooms.find((x) => x.id === selection.id);
-      if (!r) return null;
-      return <polygon points={r.polygon.map((q) => `${q.x},${q.y}`).join(' ')} fill={COL.select} fillOpacity={0.12} stroke={COL.select} strokeWidth={sw} style={{ pointerEvents: 'none' }} />;
-    }
-    if (selection.type === 'item') {
-      const it = getContainer(project, selection.scope)?.items.find((i) => i.id === selection.id);
-      if (!it) return null;
-      const s = itemSize(it);
-      const cs = rectCorners({ x: it.x, y: it.y }, Math.max(s.w, 100), Math.max(s.d, 100), it.rot);
-      const rh = add({ x: it.x, y: it.y }, rotate({ x: 0, y: Math.max(s.d, 100) / 2 + 6 * k }, it.rot));
-      const fr = add({ x: it.x, y: it.y }, rotate({ x: 0, y: Math.max(s.d, 100) / 2 }, it.rot));
-      return (
-        <g>
-          <polygon points={cs.map((q) => `${q.x},${q.y}`).join(' ')} fill="none" stroke={COL.select} strokeWidth={sw} style={{ pointerEvents: 'none' }} />
-          <line x1={fr.x} y1={fr.y} x2={rh.x} y2={rh.y} stroke={COL.select} strokeWidth={sw} style={{ pointerEvents: 'none' }} />
-          {handle(rh, 'rot')}
-        </g>
-      );
-    }
-    if (selection.type === 'route' || selection.type === 'zone') {
-      const c = getContainer(project, selection.scope);
-      const ent = selection.type === 'route' ? c?.routes.find((r) => r.id === selection.id) : c?.zones.find((z) => z.id === selection.id);
-      if (!ent) return null;
-      return (
-        <g>
-          {selection.type === 'zone' ? (
-            <polygon points={ent.points.map((q) => `${q.x},${q.y}`).join(' ')} fill="none" stroke={COL.select} strokeWidth={sw} style={{ pointerEvents: 'none' }} />
-          ) : (
-            <polyline points={ent.points.map((q) => `${q.x},${q.y}`).join(' ')} fill="none" stroke={COL.select} strokeWidth={sw * 2} strokeOpacity={0.5} style={{ pointerEvents: 'none' }} />
-          )}
-          {ent.points.map((q, i) => handle(q, 'pt', i))}
-        </g>
-      );
-    }
-    if (selection.type === 'site' && project.site) {
-      return <g>{project.site.boundary.map((q, i) => handle(q, 'pt', i))}</g>;
-    }
-    if (selection.type === 'dim') {
-      const dm = level.dims.find((x) => x.id === selection.id);
-      if (!dm) return null;
-      return (
-        <g>
-          {handle(dm.a, 'da')}
-          {handle(dm.b, 'db')}
-        </g>
-      );
-    }
-    return null;
-  };
-
-  const previewNode = (): React.ReactNode => {
-    const out: React.ReactNode[] = [];
-    const sw = 1.5 / view.zoom;
-    if (pv.snap) {
-      pv.snap.guides.forEach((g, i) => out.push(<line key={`g${i}`} x1={g.a.x} y1={g.a.y} x2={g.b.x} y2={g.b.y} stroke="#22c55e" strokeWidth={1 / view.zoom} strokeDasharray={`${4 / view.zoom}`} />));
-      if (pv.snap.kind === 'node' || pv.snap.kind === 'wall') {
-        const p = pv.snap.point;
-        out.push(<rect key="sn" x={p.x - hr} y={p.y - hr} width={hr * 2} height={hr * 2} fill="none" stroke="#22c55e" strokeWidth={sw} />);
-      }
-    }
-    if (tool === 'wall' && pv.cur) {
-      const wd = useUi.getState().wallDefaults;
-      if (pv.pts.length) {
-        const a = pv.pts[0];
-        let b = pv.cur;
-        if (pv.typed) {
-          const dir = norm(sub(pv.cur, a));
-          b = add(a, mul(dir, Number(pv.typed)));
-        }
-        const n = mul(perp(norm(sub(b, a))), wd.thickness / 2);
-        out.push(<polygon key="wp" points={[add(a, n), add(b, n), sub(b, n), sub(a, n)].map((q) => `${q.x},${q.y}`).join(' ')} fill="#60a5fa" fillOpacity={0.4} stroke="#2563eb" strokeWidth={sw} />);
-        out.push(<Prims key="wd" prims={dimPrims(a, b, wd.thickness / 2 + 4 * k, k, pv.typed ? `${pv.typed}▏` : undefined, '#2563eb')} k={k} />);
-      } else out.push(<circle key="wc" cx={pv.cur.x} cy={pv.cur.y} r={hr * 0.7} fill="#2563eb" />);
-    }
-    if (tool === 'room' && pv.pts.length && pv.cur) {
-      const a = pv.pts[0];
-      const b = pv.cur;
-      out.push(<rect key="rr" x={Math.min(a.x, b.x)} y={Math.min(a.y, b.y)} width={Math.abs(b.x - a.x)} height={Math.abs(b.y - a.y)} fill="#60a5fa" fillOpacity={0.15} stroke="#2563eb" strokeWidth={sw} />);
-      out.push(<Prims key="rd1" prims={[...dimPrims(a, { x: b.x, y: a.y }, -4 * k, k, undefined, '#2563eb'), ...dimPrims({ x: b.x, y: a.y }, b, -4 * k, k, undefined, '#2563eb')]} k={k} />);
-    }
-    if (pv.opening) {
-      const w = level.walls.find((x) => x.id === pv.opening!.wallId);
-      if (w) {
-        const g = openingGeom(pv.opening, w);
-        out.push(<polygon key="oq" points={g.quad.map((q) => `${q.x},${q.y}`).join(' ')} fill="#fff" stroke="#2563eb" strokeWidth={sw} />);
-        out.push(<Prims key="op" prims={openingPrims(pv.opening, w)} k={k} />);
-        const off = (pv.opening.swing === 'L' ? -1 : 1) * (w.thickness / 2 + 4 * k);
-        out.push(<Prims key="od" prims={[...dimPrims(w.a, g.p1, off, k, undefined, '#2563eb'), ...dimPrims(g.p2, w.b, off, k, undefined, '#2563eb')]} k={k} />);
-      }
-    }
-    if (tool === 'dim' && pv.cur) {
-      if (pv.pts.length === 1) out.push(<Prims key="dp" prims={dimPrims(pv.pts[0], pv.cur, 0, k)} k={k} />);
-      else if (pv.pts.length === 2) {
-        const [a, b] = pv.pts;
-        out.push(<Prims key="dp" prims={dimPrims(a, b, dot(sub(pv.cur, a), perp(norm(sub(b, a)))), k)} k={k} />);
-      }
-    }
-    if (pv.ghost) out.push(<ItemG key="gh" item={pv.ghost} k={k} scope="" locked ghost />);
-    if ((tool === 'route' || tool === 'zone') && pv.cur) {
-      const pts = [...pv.pts, pv.cur];
-      const color = tool === 'route' ? '#2563eb' : '#16a34a';
-      out.push(
-        tool === 'zone' && pts.length > 2 ? (
-          <polygon key="zp" points={pts.map((q) => `${q.x},${q.y}`).join(' ')} fill={color} fillOpacity={0.15} stroke={color} strokeWidth={sw} />
-        ) : (
-          <polyline key="rp" points={pts.map((q) => `${q.x},${q.y}`).join(' ')} fill="none" stroke={color} strokeWidth={sw} />
-        ),
-      );
-      if (pv.pts.length) out.push(<Prims key="rl" prims={dimPrims(pv.pts[pv.pts.length - 1], pv.cur, 3 * k, k, undefined, color)} k={k} />);
-      pv.pts.forEach((q, i) => out.push(<circle key={`rv${i}`} cx={q.x} cy={q.y} r={hr * 0.6} fill={color} />));
-    }
-    if (tool === 'calibrate' && pv.pts.length) {
-      const b = pv.pts[1] ?? pv.cur;
-      if (b) out.push(<Prims key="cl" prims={dimPrims(pv.pts[0], b, 0, k, undefined, '#dc2626')} k={k} />);
-    }
-    return <g style={{ pointerEvents: 'none' }}>{out}</g>;
-  };
-
   const applyCalibration = () => {
     const ask = pv.calibAsk;
     const real = Number(calibValue.replace(',', '.'));
     if (!ask || !(real > 0)) return;
-    const measured = dist(ask.a, ask.b);
-    const f = real / measured;
+    const f = real / dist(ask.a, ask.b);
     store().update((d) => {
       const u = getLevel(d, level.id)?.underlay;
       if (!u) return;
@@ -1098,11 +965,13 @@ export function Editor2D() {
     ui().notify(t('Масштаб підкладки відкалібровано', 'Масштаб подложки откалиброван'));
   };
 
-  const roomAtCursor = useUi((s) => s.cursor);
-  const hoverRoom = tool === 'select' && roomAtCursor ? level.rooms.find((r) => pointInPolygon(roomAtCursor, r.polygon)) : null;
+  const hoverRoom = tool === 'select' && cursor ? level.rooms.find((r) => pointInPolygon(cursor, r.polygon)) : null;
+  const single = multi.length === 1;
+  const moving = !!pv.rel || pv.guides.length > 0;
+  const windowSel = marquee ? marquee.b.x >= marquee.a.x : true;
 
   return (
-    <div ref={wrapRef} className="editor2d" onContextMenu={onContextMenu}>
+    <div ref={wrapRef} className="editor2d" onContextMenu={onContextMenu} onDragOver={(e) => e.dataTransfer.types.includes('application/x-hb-kind') && e.preventDefault()} onDrop={onDrop} data-mode={mode}>
       <svg
         ref={svgRef}
         viewBox={vb}
@@ -1128,7 +997,7 @@ export function Editor2D() {
           />
         )}
         {project.site && vis('landscape') && (
-          <g data-t="site" data-id="site" data-scope="site" style={{ pointerEvents: locked('landscape') ? 'none' : 'stroke' }}>
+          <g data-t="site" data-id="site" data-scope="site" opacity={dimmed('landscape') ? 0.45 : 1} style={{ pointerEvents: locked('landscape') ? 'none' : 'stroke' }}>
             <Prims prims={sitePrims(project.site, k)} k={k} />
           </g>
         )}
@@ -1140,65 +1009,70 @@ export function Editor2D() {
         {vis('rooms') && (
           <g style={{ pointerEvents: 'none' }}>
             {level.rooms.map((r) => (
-              <polygon key={r.id} points={r.polygon.map((q) => `${q.x},${q.y}`).join(' ')} fill={project.finishes.find((f) => f.id === r.floorFinish)?.color ?? '#e5e7eb'} fillOpacity={hoverRoom?.id === r.id ? 0.42 : 0.3} />
+              <polygon key={r.id} points={ptsAttr(r.polygon)} fill={project.finishes.find((f) => f.id === r.floorFinish)?.color ?? '#e5e7eb'} fillOpacity={hoverRoom?.id === r.id ? 0.42 : 0.3} />
             ))}
           </g>
         )}
         {scopes.map((sc) => (
           <g key={`z${sc.scope}`}>
-            {sc.zones.filter((z) => vis(layerOfZone(z))).map((z) => (
-              <ZoneG key={z.id} zone={z} k={k} scope={sc.scope} locked={locked(layerOfZone(z))} label={ls(zoneDef(z.kind)?.name)} />
-            ))}
+            {sc.zones
+              .filter((z) => vis(layerOfZone(z)))
+              .map((z) => (
+                <ZoneG key={z.id} zone={z} k={k} scope={sc.scope} locked={locked(layerOfZone(z))} dim={dimmed(layerOfZone(z))} label={ls(zoneDef(z.kind)?.name)} />
+              ))}
           </g>
         ))}
         {project.site && vis('landscape') && (
           <g>
             {project.site.routes.map((r) => (
-              <RouteG key={r.id} route={r} k={k} scope="site" locked={locked('landscape')} />
+              <RouteG key={r.id} route={r} k={k} scope="site" locked={locked('landscape')} dim={dimmed('landscape')} />
             ))}
           </g>
         )}
-        {below && vis('walls') && <WallsLayer walls={below.walls} openings={below.openings} k={k} ghost />}
-        {vis('walls') && <WallsLayer walls={level.walls} openings={level.openings} k={k} />}
+        {belowGeom && vis('walls') && <WallsLayer walls={belowGeom.walls} openings={belowGeom.openings} k={k} ghost />}
+        {vis('walls') && geom.demolished.length > 0 && (
+          <g style={{ pointerEvents: 'none' }} data-demolished={geom.demolished.length}>
+            <Prims prims={demolishedPrims(geom.demolished)} k={k} />
+          </g>
+        )}
+        {vis('walls') && <WallsLayer walls={geom.walls} openings={geom.openings} k={k} />}
         {vis('walls') && (
           <g>
-            {level.walls.map((w) => (
-              <polygon
-                key={w.id}
-                data-t="wall"
-                data-id={w.id}
-                data-scope={level.id}
-                points={wallPolygon(w, level.walls).map((q) => `${q.x},${q.y}`).join(' ')}
-                fill="#000"
-                fillOpacity={0.001}
-                style={{ pointerEvents: locked('walls') ? 'none' : undefined, cursor: 'move' }}
-              />
+            {hitPolys.map(({ wall, polys }) => (
+              <g key={wall.id} data-t="wall" data-id={wall.id} data-scope={level.id} style={{ pointerEvents: locked('walls') ? 'none' : undefined, cursor: 'move' }}>
+                {polys.map((pg, i) => (
+                  <polygon key={i} points={ptsAttr(pg)} fill="#000" fillOpacity={0.001} />
+                ))}
+              </g>
             ))}
-            {level.openings.map((o) => {
-              const w = level.walls.find((x) => x.id === o.wallId);
+            {geom.openings.map((o) => {
+              const w = geom.walls.find((x) => x.id === o.wallId);
               return w ? <OpeningG key={o.id} o={o} wall={w} k={k} scope={level.id} locked={locked('walls')} /> : null;
             })}
           </g>
         )}
         {scopes.map((sc) => (
           <g key={`i${sc.scope}`}>
-            {[...sc.items]
-              .filter((it) => vis(layerOfItem(it)))
-              .sort((a, b) => (layerOfItem(a) === 'furniture' ? 0 : 1) - (layerOfItem(b) === 'furniture' ? 0 : 1) || a.z - b.z)
-              .map((it) => (
-                <ItemG key={it.id} item={it} k={k} scope={sc.scope} locked={locked(layerOfItem(it))} />
-              ))}
+            {byActive(
+              sc.items.filter((it) => vis(layerOfItem(it))).sort((a, b) => (layerOfItem(a) === 'furniture' ? 0 : 1) - (layerOfItem(b) === 'furniture' ? 0 : 1) || a.z - b.z),
+              layerOfItem,
+            ).map((it) => (
+              <ItemG key={it.id} item={it} k={k} scope={sc.scope} locked={locked(layerOfItem(it))} dim={dimmed(layerOfItem(it))} />
+            ))}
           </g>
         ))}
         <g>
-          {level.routes.filter((r) => vis(layerOfRoute(r))).map((r) => (
-            <RouteG key={r.id} route={r} k={k} scope={level.id} locked={locked(layerOfRoute(r))} color={typeof r.params.group === 'string' ? groupColors.get(r.params.group) : undefined} />
+          {byActive(
+            level.routes.filter((r) => vis(layerOfRoute(r))),
+            layerOfRoute,
+          ).map((r) => (
+            <RouteG key={r.id} route={r} k={k} scope={level.id} locked={locked(layerOfRoute(r))} dim={dimmed(layerOfRoute(r))} color={typeof r.params.group === 'string' ? groupColors.get(r.params.group) : undefined} />
           ))}
         </g>
         {vis('rooms') && (
           <g>
             {level.rooms.map((r) => (
-              <g key={r.id} data-t="room" data-id={r.id} data-scope={level.id} style={{ cursor: 'pointer', pointerEvents: tool === 'select' ? undefined : 'none' }}>
+              <g key={r.id} data-t="room" data-id={r.id} data-scope={level.id} style={{ cursor: 'pointer', pointerEvents: locked('rooms') ? 'none' : undefined }}>
                 <rect x={r.seed.x - 14 * k} y={r.seed.y - 4 * k} width={28 * k} height={9.5 * k} fill="#fff" fillOpacity={0.01} />
                 <Prims prims={roomLabelPrims(r, k)} k={k} />
               </g>
@@ -1206,7 +1080,7 @@ export function Editor2D() {
           </g>
         )}
         {vis('dimensions') && (
-          <g>
+          <g opacity={dimmed('dimensions') ? 0.35 : 1}>
             {autoDims && (
               <g style={{ pointerEvents: 'none' }}>
                 <Prims prims={autoDimPrims(level, k)} k={k} />
@@ -1224,8 +1098,27 @@ export function Editor2D() {
             <Prims prims={northArrowPrims(view.cx + size.w / 2 / view.zoom - 12 * k, view.cy - size.h / 2 / view.zoom + 14 * k, project.site.north, k)} k={k} />
           </g>
         )}
-        {selOverlay()}
-        {previewNode()}
+        <g data-selection={multi.length}>
+          {multi.map((s) => (
+            <SelOverlay key={`${s.type}:${s.id}`} sel={s} single={single} project={project} level={level} geom={geom} hitPolys={hitPolys} k={k} zoom={view.zoom} moving={moving} />
+          ))}
+        </g>
+        {marquee && (
+          <rect
+            data-marquee={windowSel ? 'window' : 'crossing'}
+            x={Math.min(marquee.a.x, marquee.b.x)}
+            y={Math.min(marquee.a.y, marquee.b.y)}
+            width={Math.abs(marquee.b.x - marquee.a.x)}
+            height={Math.abs(marquee.b.y - marquee.a.y)}
+            fill={windowSel ? '#2563eb' : '#16a34a'}
+            fillOpacity={0.1}
+            stroke={windowSel ? '#2563eb' : '#16a34a'}
+            strokeWidth={1.2 / view.zoom}
+            strokeDasharray={windowSel ? undefined : `${5 / view.zoom}`}
+            style={{ pointerEvents: 'none' }}
+          />
+        )}
+        <ToolPreview pv={pv} tool={tool} level={level} k={k} zoom={view.zoom} wallThickness={wallThickness} t={t} />
       </svg>
       {menu && <ContextMenu x={menu.x} y={menu.y} entries={menuEntries()} onClose={() => setMenu(null)} />}
       {pv.calibAsk && (
@@ -1243,17 +1136,22 @@ export function Editor2D() {
       )}
       <div className="statusbar">
         <span>
-          X {roomAtCursor ? Math.round(roomAtCursor.x) : '—'} · Y {roomAtCursor ? Math.round(roomAtCursor.y) : '—'} {t('мм', 'мм')}
+          X {cursor ? Math.round(cursor.x) : '—'} · Y {cursor ? Math.round(cursor.y) : '—'} {t('мм', 'мм')}
         </span>
         {hoverRoom && (
           <span>
             {hoverRoom.name}: {hoverRoom.area.toFixed(2).replace('.', ',')} м²
           </span>
         )}
+        {multi.length > 1 && (
+          <span className="accent" data-count={multi.length}>
+            {t('Виділено', 'Выделено')}: {multi.length}
+          </span>
+        )}
         {tool === 'wall' && pv.pts.length === 1 && <span className="accent">{pv.typed ? `${t('Довжина', 'Длина')}: ${pv.typed} мм ⏎` : t('Введіть довжину цифрами та натисніть Enter', 'Введите длину цифрами и нажмите Enter')}</span>}
         <span className="grow" />
         <span>1:{Math.round(k)}</span>
-        <button className="link" onClick={fit}>
+        <button className="link" onClick={() => window.dispatchEvent(new Event('hb-fit'))}>
           {t('Показати все', 'Показать всё')}
         </button>
       </div>

@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 (async () => {
-  const { browser, page, errors } = await launch();
+  const { browser, page, errors } = await launch(undefined, { hints: true });
   const out = path.join(__dirname, '..', 'e2e-out');
   fs.mkdirSync(out, { recursive: true });
   let s = await state(page);
@@ -79,7 +79,7 @@ const path = require('path');
   check('перетаскивание стены меняет площадь помещения', Math.abs(big - exp2) < 0.05, `${big} ≈ ${exp2.toFixed(2)}`);
 
   // мебель из библиотеки
-  await page.click('[data-tab="library"]');
+  await page.click('[data-tab="furniture"]');
   await page.click('text=Диван прямий');
   await moveWorld(page, 4000, 300);
   await clickWorld(page, 4000, 300);

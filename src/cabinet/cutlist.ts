@@ -1,6 +1,6 @@
 // Деталировка: пильные размеры с учётом кромки, группировка, итоги по кромке и материалам.
 import type { LS } from '../model/types';
-import type { CabinetCatalog, EdgeSides, Part } from './types';
+import type { CabinetCatalog, EdgeSides, Grain, Part } from './types';
 
 /** Запас кромки на подрезку и свесы. */
 export const EDGE_RESERVE = 0.1;
@@ -36,7 +36,7 @@ export interface CutRow {
   cutWidth: number;
   qty: number;
   edges: EdgeSides;
-  grain: 'length' | 'none';
+  grain: Grain;
   partKeys: string[];
 }
 

@@ -1,5 +1,5 @@
 // Диалоги: новый проект, список проектов, справка, справочник норм, каталог отделки, электрические группы.
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { cableAmpacity, networkSummary } from '../calc/networks';
 import { FINISH_TYPE_NAMES } from '../catalog/finishes';
 import { fmt, useT } from '../i18n';
@@ -13,6 +13,7 @@ import type { ProjectInfo } from '../store/persistence';
 import { useProject } from '../store/projectStore';
 import { useUi } from '../store/uiStore';
 import { Dialog } from './Dialog';
+import { MaterialsDialog } from './MaterialsDialog';
 import { NumInput } from './fields';
 import { useIssues } from './SidePanels';
 
@@ -21,7 +22,7 @@ export function openProject(p: Project) {
   const ui = useUi.getState();
   ui.setActiveLevel(useProject.getState().project.levels[0].id);
   ui.setLastProject(p.id);
-  ui.set({ selection: null, tool: 'select', dialog: null, leftTab: 'build' });
+  ui.set({ selection: null, multi: [], tool: 'select', toolKind: null, dialog: null, mode: 'plan' });
 }
 
 function NewProjectDialog({ onClose }: { onClose: () => void }) {
@@ -114,6 +115,7 @@ function ProjectsDialog({ onClose }: { onClose: () => void }) {
 
 function HelpDialog({ onClose }: { onClose: () => void }) {
   const { t } = useT();
+  const hintsOff = useUi((s) => s.hintsOff);
   const keys: [string, string][] = [
     ['V', t('Вибір і перетягування', 'Выбор и перетаскивание')],
     ['W', t('Стіна (цифри + Enter — точна довжина)', 'Стена (цифры + Enter — точная длина)')],
@@ -135,9 +137,21 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
     [t('Колесо миші', 'Колесо мыши'), t('Масштаб', 'Масштаб')],
     ['Shift', t('Вільний рух стіни / вільний кут / ставити кілька об’єктів', 'Свободное движение стены / свободный угол / ставить несколько объектов')],
     ['Alt', t('Не прилипати до стін під час перетягування', 'Не прилипать к стенам при перетаскивании')],
+    ['A', t('Дугова стіна', 'Дуговая стена')],
+    ['T', t('Рулетка', 'Рулетка')],
+    [t('Shift+клік', 'Shift+клик'), t('Додати / прибрати об’єкт у виділенні', 'Добавить / убрать объект из выделения')],
+    ['Ctrl+A', t('Виділити все в поточному режимі', 'Выделить всё в текущем режиме')],
+    [t('Повторний клік / Alt+клік', 'Повторный клик / Alt+клик'), t('Наступний об’єкт під курсором', 'Следующий объект под курсором')],
   ];
   return (
     <Dialog title={t('Довідка та гарячі клавіші', 'Справка и горячие клавиши')} onClose={onClose}>
+      <label className="mini-check" data-setting="hints">
+        <input type="checkbox" checked={!hintsOff} onChange={(e) => useUi.getState().setHintsOff(!e.target.checked)} />
+        {t('Показувати підказки внизу полотна', 'Показывать подсказки внизу холста')}
+      </label>{' '}
+      <button className="link" onClick={() => useUi.getState().set({ hintsSeen: [] })} title={t('Підказки з’являться знову при першому використанні інструментів', 'Подсказки появятся снова при первом использовании инструментов')}>
+        {t('показати всі підказки заново', 'показать все подсказки заново')}
+      </button>
       <ol className="help-steps">
         <li>{t('Квартира за техпаспортом: праворуч «Підкладка» → завантажте фото → «Калібрувати» → обведіть стіни інструментом «Стіна».', 'Квартира по техпаспорту: справа «Подложка» → загрузите фото → «Калибровать» → обведите стены инструментом «Стена».')}</li>
         <li>{t('Додайте двері та вікна, назвіть приміщення (клік по назві на плані), задайте оздоблення.', 'Добавьте двери и окна, назовите помещения (клик по названию на плане), задайте отделку.')}</li>
@@ -174,24 +188,33 @@ function RulesDialog({ onClose }: { onClose: () => void }) {
       <p className="hint">
         {t('Значення редагуються і зберігаються в проєкті. Позначка «перевірено» — ваша відмітка, що значення звірено з чинним документом. Базовий довідник: src/rules/rules.json.', 'Значения редактируются и сохраняются в проекте. Отметка «проверено» — ваша отметка, что значение сверено с действующим документом. Базовый справочник: src/rules/rules.json.')}
       </p>
-      {cats.map((c) => (
-        <div key={c}>
-          <h4>{ls(RULE_CATEGORIES[c] ?? { uk: c, ru: c })}</h4>
-          <table className="data">
-            <thead>
-              <tr>
-                <th>{t('Правило', 'Правило')}</th>
-                <th>{t('Значення', 'Значение')}</th>
-                <th>{t('Джерело', 'Источник')}</th>
-                <th>{t('Перевірено', 'Проверено')}</th>
-                <th>{t('Порушень', 'Нарушений')}</th>
+      <table className="data rules-table" data-table="rules">
+        <colgroup>
+          <col style={{ width: '32%' }} />
+          <col style={{ width: '150px' }} />
+          <col />
+          <col style={{ width: '96px' }} />
+          <col style={{ width: '96px' }} />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>{t('Правило', 'Правило')}</th>
+            <th>{t('Значення', 'Значение')}</th>
+            <th>{t('Джерело', 'Источник')}</th>
+            <th className="center">{t('Перевірено', 'Проверено')}</th>
+            <th className="center">{t('Порушень', 'Нарушений')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cats.map((c) => (
+            <Fragment key={c}>
+              <tr className="total">
+                <td colSpan={5}>{ls(RULE_CATEGORIES[c] ?? { uk: c, ru: c })}</td>
               </tr>
-            </thead>
-            <tbody>
               {rules
                 .filter((r) => r.category === c)
                 .map((r) => (
-                  <tr key={r.id}>
+                  <tr key={r.id} data-rule={r.id}>
                     <td>
                       {ls(r.title)}
                       <br />
@@ -202,113 +225,13 @@ function RulesDialog({ onClose }: { onClose: () => void }) {
                     <td className="center">
                       <input type="checkbox" checked={r.verified} onChange={(e) => setOv(r.id, { verified: e.target.checked })} />
                     </td>
-                    <td className="center">{issues.filter((i) => i.ruleId === r.id).length || ''}</td>
+                    <td className="center" data-col="count">
+                      {issues.filter((i) => i.ruleId === r.id).length || '—'}
+                    </td>
                   </tr>
                 ))}
-            </tbody>
-          </table>
-        </div>
-      ))}
-    </Dialog>
-  );
-}
-
-function FinishesDialog({ onClose }: { onClose: () => void }) {
-  const { t, ls, lang } = useT();
-  const finishes = useProject((s) => s.project.finishes);
-  const mut = (id: string, fn: (f: Finish) => void) =>
-    useProject.getState().update((d) => {
-      const f = d.finishes.find((x) => x.id === id);
-      if (f) fn(f);
-    });
-  const add = (type: Finish['type']) =>
-    useProject.getState().update((d) => {
-      const tiled = type === 'tile' || type === 'laminate' || type === 'panel';
-      d.finishes.push({
-        id: newId('fin'),
-        name: { uk: `${FINISH_TYPE_NAMES[type].uk} (нове)`, ru: `${FINISH_TYPE_NAMES[type].ru} (новое)` },
-        type,
-        color: '#d8d4cc',
-        target: type === 'laminate' ? ['floor'] : type === 'tile' ? ['wall', 'floor'] : ['wall', 'ceiling'],
-        ...(tiled ? { tileW: type === 'tile' ? 600 : type === 'panel' ? 200 : 1380, tileH: type === 'tile' ? 300 : type === 'panel' ? 2600 : 193, grout: type === 'tile' ? 2 : 0, groutColor: '#b0b4b8', pattern: type === 'tile' ? 'grid' : 'brick', packArea: 1.5 } : {}),
-      });
-    });
-  return (
-    <Dialog
-      title={t('Каталог оздоблення', 'Каталог отделки')}
-      onClose={onClose}
-      wide
-      footer={
-        <>
-          <span>{t('Додати:', 'Добавить:')}</span>
-          {(['paint', 'plaster', 'tile', 'laminate', 'panel', 'gkl'] as Finish['type'][]).map((ty) => (
-            <button key={ty} onClick={() => add(ty)}>
-              + {ls(FINISH_TYPE_NAMES[ty])}
-            </button>
+            </Fragment>
           ))}
-        </>
-      }
-    >
-      <table className="data">
-        <thead>
-          <tr>
-            <th>{t('Назва', 'Название')}</th>
-            <th>{t('Тип', 'Тип')}</th>
-            <th>{t('Колір', 'Цвет')}</th>
-            <th>{t('Застосування', 'Применение')}</th>
-            <th>{t('Елемент Ш×В, мм', 'Элемент Ш×В, мм')}</th>
-            <th>{t('Шов', 'Шов')}</th>
-            <th>{t('Розкладка', 'Раскладка')}</th>
-            <th>{t('м² в упак.', 'м² в упак.')}</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {finishes.map((f) => {
-            const tiled = f.tileW !== undefined;
-            return (
-              <tr key={f.id}>
-                <td>
-                  <input type="text" value={f.name[lang]} onChange={(e) => mut(f.id, (x) => (x.name = { ...x.name, [lang]: e.target.value }))} />
-                </td>
-                <td>{ls(FINISH_TYPE_NAMES[f.type])}</td>
-                <td>
-                  <input type="color" value={f.color} onChange={(e) => mut(f.id, (x) => (x.color = e.target.value))} />
-                </td>
-                <td className="nowrap">
-                  {(['wall', 'floor', 'ceiling'] as const).map((tg) => (
-                    <label key={tg} className="mini-check" title={tg}>
-                      <input type="checkbox" checked={f.target.includes(tg)} onChange={(e) => mut(f.id, (x) => (x.target = e.target.checked ? [...x.target, tg] : x.target.filter((q) => q !== tg)))} />
-                      {tg === 'wall' ? t('ст', 'ст') : tg === 'floor' ? t('підл', 'пол') : t('стеля', 'потол')}
-                    </label>
-                  ))}
-                </td>
-                <td className="nowrap">
-                  {tiled && (
-                    <>
-                      <NumInput value={f.tileW ?? 0} min={10} max={5000} onChange={(v) => mut(f.id, (x) => (x.tileW = v))} /> × <NumInput value={f.tileH ?? 0} min={10} max={5000} onChange={(v) => mut(f.id, (x) => (x.tileH = v))} />
-                    </>
-                  )}
-                </td>
-                <td>{tiled && <NumInput value={f.grout ?? 0} min={0} max={20} onChange={(v) => mut(f.id, (x) => (x.grout = v))} />}</td>
-                <td>
-                  {tiled && (
-                    <select value={f.pattern ?? 'grid'} onChange={(e) => mut(f.id, (x) => (x.pattern = e.target.value as Finish['pattern']))}>
-                      <option value="grid">{t('Шов у шов', 'Шов в шов')}</option>
-                      <option value="brick">{t('Урозбіжку', 'Вразбежку')}</option>
-                      <option value="diagonal">{t('Діагональ', 'Диагональ')}</option>
-                    </select>
-                  )}
-                </td>
-                <td>{tiled && <NumInput value={f.packArea ?? 0} min={0} max={50} digits={2} onChange={(v) => mut(f.id, (x) => (x.packArea = v))} />}</td>
-                <td>
-                  <button className="icon-btn danger" title={t('Видалити', 'Удалить')} onClick={() => useProject.getState().update((d) => void (d.finishes = d.finishes.filter((x) => x.id !== f.id)))}>
-                    ✕
-                  </button>
-                </td>
-              </tr>
-            );
-          })}
         </tbody>
       </table>
     </Dialog>
@@ -444,7 +367,7 @@ export function BasicDialogs() {
     case 'rules':
       return <RulesDialog onClose={close} />;
     case 'finishes':
-      return <FinishesDialog onClose={close} />;
+      return <MaterialsDialog onClose={close} />;
     case 'groups':
       return <GroupsDialog onClose={close} />;
     default:

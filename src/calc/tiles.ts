@@ -95,4 +95,9 @@ export function tileLayoutRect(width: number, height: number, holes: Hole[], f: 
   return tileLayout(poly, holes, f.tileW ?? 0, f.tileH ?? 0, f.grout ?? 0, f.pattern, reservePct, f.packArea);
 }
 
-export const isTiled = (f: Finish | undefined): boolean => !!f && (f.type === 'tile' || f.type === 'laminate' || f.type === 'parquet' || f.type === 'panel') && (f.tileW ?? 0) > 0 && (f.tileH ?? 0) > 0;
+/** Типы отделки из штучных элементов (плитка, доска, панель). */
+export const TILED_TYPES: Finish['type'][] = ['tile', 'porcelain', 'stone', 'laminate', 'parquet', 'panel'];
+/** Плиточные типы (считаются поштучно). */
+export const isTileType = (t: Finish['type']): boolean => t === 'tile' || t === 'porcelain' || t === 'stone';
+export const isPlankType = (t: Finish['type']): boolean => t === 'laminate' || t === 'parquet' || t === 'panel';
+export const isTiled = (f: Finish | undefined): boolean => !!f && TILED_TYPES.includes(f.type) && (f.tileW ?? 0) > 0 && (f.tileH ?? 0) > 0;

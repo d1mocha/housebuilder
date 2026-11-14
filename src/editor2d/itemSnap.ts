@@ -1,6 +1,7 @@
 // Прилипание объектов к стенам: спинкой к грани стены, боком — к перпендикулярной стене.
-import { add, angleDeg, closestOnSegment, dot, mul, norm, perp, sub } from '../model/geometry';
+import { add, closestOnSegment, dot, mul, norm, perp, sub } from '../model/geometry';
 import type { Vec2, Wall } from '../model/types';
+import { wallFacingRot } from '../model/walls';
 
 export interface ItemPose {
   x: number;
@@ -19,7 +20,7 @@ export function snapItemToWalls(center: Vec2, w: number, d: number, rot: number,
   if (!best) return { x: center.x, y: center.y, rot, snapped: false };
   const u = norm(sub(center, best.q));
   let c = add(best.q, mul(u, best.wall.thickness / 2 + d / 2));
-  const newRot = (Math.round(angleDeg(u) - 90) + 360) % 360;
+  const newRot = wallFacingRot(best.wall, center);
   const s = perp(u);
   for (const w2 of walls) {
     if (w2 === best.wall) continue;

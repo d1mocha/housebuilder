@@ -24,7 +24,7 @@ const issues = (page) => page.evaluate(() => [...document.querySelectorAll('.iss
   const base = await issues(page);
   check('демо без ошибок норм (только предупреждения/справки)', base.every((i) => !i.cls.includes('error')), `${base.length} записей`);
 
-  await page.click('.left-panel [data-tab="eng"]');
+  await page.click('.left-panel [data-tab="electrical"]');
   // розетка в ванной у ванны (верхняя стена ванной y=4000, ванна x 7055..8755)
   await pickKind('Розетка');
   await clickWorld(page, 7400, 4030);
@@ -41,7 +41,7 @@ const issues = (page) => page.evaluate(() => [...document.querySelectorAll('.iss
   await page.waitForTimeout(200);
 
   // кабельная трасса
-  await page.click('.left-panel [data-tab="eng"]');
+  await page.click('.left-panel [data-tab="electrical"]');
   await pickKind('Кабельна траса');
   const r0 = (await state(page)).routes;
   await clickWorld(page, 600, 600);
@@ -55,6 +55,7 @@ const issues = (page) => page.evaluate(() => [...document.querySelectorAll('.iss
   check('в свойствах трассы — длина и штроба', /Довжина в плані\s*4 м/.test(props.replace(/ /g, ' ')) && /Штроба/.test(props), (props.match(/Довжина в плані[^Ш]{0,12}/) || [''])[0]);
 
   // канализация с малым уклоном
+  await page.click('.left-panel [data-tab="water"]');
   await pickKind('Каналізаційна труба');
   await clickWorld(page, 7300, 4800);
   await clickWorld(page, 8300, 4800);
@@ -67,7 +68,7 @@ const issues = (page) => page.evaluate(() => [...document.querySelectorAll('.iss
   check('уклон канализации меньше нормы → ошибка', list.some((i) => i.rule === 'pl.sewer.minSlope.50' && i.cls.includes('error')));
 
   // газ
-  await page.click('.left-panel [data-tab="eng"]');
+  await page.click('.left-panel [data-tab="heating"]');
   const gasWarn = await page.textContent('.left-panel');
   check('газ: явное предупреждение об операторе ГРМ в палитре', /оператор ГРМ/.test(gasWarn));
   await pickKind('Точка підключення газового приладу');
@@ -77,7 +78,7 @@ const issues = (page) => page.evaluate(() => [...document.querySelectorAll('.iss
   check('газ: предупреждение в панели норм и дистанция до электроточки', list.some((i) => i.rule === 'gas.disclaimer') && list.some((i) => i.rule === 'el.gas.socketDistance'));
 
   // тёплый пол
-  await page.click('.left-panel [data-tab="eng"]');
+  await page.click('.left-panel [data-tab="heating"]');
   await pickKind('Тепла підлога');
   for (const [x, y] of [[4800, 300], [8700, 300], [8700, 3700], [4800, 3700]]) await clickWorld(page, x, y);
   await page.keyboard.press('Enter');
@@ -88,6 +89,7 @@ const issues = (page) => page.evaluate(() => [...document.querySelectorAll('.iss
   await page.screenshot({ path: path.join(out, '11-engineering.png') });
 
   // слои
+  await page.click('.left-panel [data-tab="furniture"]');
   await page.click('.right-panel [data-tab="layers"]');
   const cnt = () => page.evaluate(() => document.querySelectorAll('.editor2d [data-t="item"]').length);
   const n1 = await cnt();

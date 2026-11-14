@@ -12,6 +12,8 @@ export interface BoardMaterial {
   /** Есть направление текстуры (детали нельзя поворачивать при раскрое). */
   grain: boolean;
   color: string;
+  /** Декор: текстура из библиотеки (волокна идут вдоль длины листа). */
+  textureId?: string;
 }
 
 export interface EdgeBand {
@@ -41,6 +43,8 @@ export interface EdgeSides {
   w2: string | null;
 }
 
+export type Grain = 'length' | 'width' | 'none';
+
 export type PartRole =
   | 'side'
   | 'top'
@@ -56,6 +60,7 @@ export type PartRole =
   | 'drawerEnd'
   | 'drawerBottom'
   | 'slidingDoor'
+  | 'slidingProfile'
   | 'manual';
 
 export interface PartBox {
@@ -80,8 +85,8 @@ export interface Part {
   thickness: number;
   edges: EdgeSides;
   qty: number;
-  /** Текстура вдоль длины; 'none' — деталь можно поворачивать. */
-  grain: 'length' | 'none';
+  /** Направление текстуры: вдоль длины детали, поперёк (вдоль ширины) или без (деталь можно поворачивать). */
+  grain: Grain;
   box?: PartBox;
   /** Только для 3D-превью, в деталировку не попадает (например, полотно купе в алюминиевом профиле). */
   virtual?: boolean;
@@ -108,12 +113,13 @@ export interface ManualPart {
   width: number;
   qty: number;
   edges: EdgeSides;
-  grain: 'length' | 'none';
+  grain: Grain;
 }
 
 export interface PartOverride {
   edges?: Partial<EdgeSides>;
   materialId?: string;
+  grain?: Grain;
   skip?: boolean;
 }
 
@@ -168,6 +174,11 @@ export interface CabinetDesign {
     slidingHeightDeduct: number;
     /** Добавлять наполнение дверей-купе из плиты в деталировку. */
     slidingInfill: boolean;
+    /** Ширина вертикального профиля двери-купе (видимая), мм. */
+    slidingProfile?: number;
+    /** Вычет ширины/высоты наполнения от размера двери (зависит от системы профиля), мм. */
+    slidingInfillDeductW?: number;
+    slidingInfillDeductH?: number;
     handles: boolean;
   };
   joint: 'confirmat' | 'eccentric';

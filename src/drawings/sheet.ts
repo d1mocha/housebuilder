@@ -1,10 +1,12 @@
 // Листы чертежей: рамка, штамп, условные обозначения, планы по слоям. Координаты — мм бумаги.
 import { itemDef, routeDef, zoneDef } from '../catalog/registry';
 import type { LayerId, Lang, Level, LS, Project } from '../model/types';
-import { autoDimPrims, dimEntityPrims, itemPrims, northArrowPrims, openingPrims, roomLabelPrims, routePrims, sitePrims, wallsPrims, zonePrims } from '../draw2d/plan';
+import { dimEntityPrims, itemPrims, northArrowPrims, openingMarkPrims, openingMarks, openingPrims, outerDimPrims, roomDimPrims, roomLabelPrims, routePrims, sitePrims, wallsPrims, zonePrims } from '../draw2d/plan';
+import type { OpeningMark } from '../draw2d/plan';
 import type { Prim2 } from '../draw2d/prims';
 import { line, primsBBox, rect, text, transform } from '../draw2d/prims';
 import { elevationPrims, facadePrims, sectionPrims } from './views';
+import { geomOf } from '../model/walls';
 
 export type SheetKind = 'measure' | 'furniture' | 'electrical' | 'plumbing' | 'heating' | 'ventilation' | 'elevations' | 'section' | 'facades' | 'site';
 
@@ -100,6 +102,28 @@ function legendPrims(entries: { prims: Prim2[]; label: string }[], x: number, y:
   return out;
 }
 
+/** Ведомость проёмов: марка, тип, размер, количество. */
+function schedulePrims(rows: OpeningMark[], x: number, y: number, lang: Lang): Prim2[] {
+  const T = (uk: string, ru: string) => (lang === 'ru' ? ru : uk);
+  const cols = [0, 12, 30, 50, 58];
+  const rh = 5;
+  const th = { stroke: '#000000', w: 0.18 };
+  const out: Prim2[] = [text(x, y, T('Відомість прорізів', 'Ведомость проёмов'), 2.6, { anchor: 'start', bold: true })];
+  const y0 = y + 3;
+  const head = [T('Марка', 'Марка'), T('Тип', 'Тип'), T('Розмір, мм', 'Размер, мм'), T('К-сть', 'Кол.')];
+  const typeName = (r: OpeningMark) => (r.kind === 'window' ? T('Вікно', 'Окно') : r.kind === 'portal' ? T('Проріз', 'Проём') : r.style === 'entrance' ? T('Двері вх.', 'Дверь вх.') : T('Двері', 'Дверь'));
+  const all = [head, ...rows.map((r) => [r.mark, typeName(r), `${r.width}×${r.height}`, String(r.qty)])];
+  all.forEach((cells, i) => {
+    const yy = y0 + i * rh;
+    out.push(line(x, yy, x + cols[4], yy, th));
+    cells.forEach((c, j) => out.push(text(x + (cols[j] + cols[j + 1]) / 2, yy + rh / 2, c, 2, { bold: i === 0 })));
+  });
+  const yEnd = y0 + all.length * rh;
+  out.push(line(x, yEnd, x + cols[4], yEnd, th));
+  for (const c of cols) out.push(line(x + c, y0, x + c, yEnd, th));
+  return out;
+}
+
 const PLAN_LAYERS: Partial<Record<SheetKind, LayerId[]>> = {
   measure: [],
   furniture: ['furniture'],
@@ -111,7 +135,13 @@ const PLAN_LAYERS: Partial<Record<SheetKind, LayerId[]>> = {
 };
 
 /** Содержимое плана в координатах модели при масштабе 1:N. */
-function planContent(p: Project, level: Level, kind: SheetKind, N: number, lang: Lang): { prims: Prim2[]; legend: { prims: Prim2[]; label: string }[] } {
+interface Content {
+  prims: Prim2[];
+  legend: { prims: Prim2[]; label: string }[];
+  schedule?: OpeningMark[];
+}
+
+function planContent(p: Project, level: Level, kind: SheetKind, N: number, lang: Lang): Content {
   const layers = PLAN_LAYERS[kind] ?? [];
   const out: Prim2[] = [];
   const legend = new Map<string, { prims: Prim2[]; label: string }>();
@@ -127,9 +157,10 @@ function planContent(p: Project, level: Level, kind: SheetKind, N: number, lang:
     const def = zoneDef(z.kind);
     if (def && layers.includes(def.layer)) out.push(...zonePrims(z, N, pick(def.name, lang)));
   }
-  out.push(...wallsPrims(level.walls, level.openings, true));
-  for (const o of level.openings) {
-    const w = level.walls.find((x) => x.id === o.wallId);
+  const gm = geomOf(level);
+  out.push(...wallsPrims(gm.walls, gm.openings, true));
+  for (const o of gm.openings) {
+    const w = gm.walls.find((x) => x.id === o.wallId);
     if (w) out.push(...openingPrims(o, w));
   }
   const faded = kind !== 'furniture' && kind !== 'measure' && kind !== 'site';
@@ -161,9 +192,23 @@ function planContent(p: Project, level: Level, kind: SheetKind, N: number, lang:
     }
   }
   for (const r of level.rooms) out.push(...roomLabelPrims(r, N));
-  if (kind === 'measure') out.push(...autoDimPrims(level, N, '#1f2937'));
+  let schedule: OpeningMark[] = [];
+  if (kind === 'measure') {
+    // обмерный план: внутренние размеры без дублей, внешние цепочки (проёмы → оси → габарит), марки проёмов
+    out.push(...roomDimPrims(level, N));
+    out.push(...outerDimPrims(gm.walls, gm.openings, N));
+    const marks = openingMarks(level.openings);
+    schedule = marks.schedule;
+    const pts = gm.walls.flatMap((w) => [w.a, w.b]);
+    const c = pts.length ? { x: pts.reduce((s, q) => s + q.x, 0) / pts.length, y: pts.reduce((s, q) => s + q.y, 0) / pts.length } : { x: 0, y: 0 };
+    for (const o of gm.openings) {
+      const w = gm.walls.find((x) => x.id === o.wallId);
+      const mark = marks.byId.get(o.id);
+      if (w && mark) out.push(...openingMarkPrims(o, w, mark, N, c));
+    }
+  }
   for (const dm of level.dims) out.push(...dimEntityPrims(dm, N));
-  return { prims: out, legend: [...legend.values()] };
+  return { prims: out, legend: [...legend.values()], schedule };
 }
 
 export function buildSheet(p: Project, spec: SheetSpec, lang: Lang = 'uk', sheetNo = 1): Sheet {
@@ -176,7 +221,7 @@ export function buildSheet(p: Project, spec: SheetSpec, lang: Lang = 'uk', sheet
   let title = pick(SHEET_TITLES[spec.kind], lang);
   if (p.levels.length > 1 && spec.kind !== 'facades' && spec.kind !== 'site' && spec.kind !== 'section') title += ` — ${level.name}`;
 
-  const build = (N: number): { prims: Prim2[]; legend: { prims: Prim2[]; label: string }[] } => {
+  const build = (N: number): Content => {
     if (spec.kind === 'elevations') {
       const room = level.rooms.find((r) => r.id === spec.roomId) ?? level.rooms[0];
       return { prims: room ? elevationPrims(p, level, room, N, lang) : [], legend: [] };
@@ -193,7 +238,7 @@ export function buildSheet(p: Project, spec: SheetSpec, lang: Lang = 'uk', sheet
     const bb = primsBBox(content.prims);
     const cw = bb.maxX - bb.minX;
     const chh = bb.maxY - bb.minY;
-    const legendW = content.legend.length ? 55 : 0;
+    const legendW = content.legend.length || content.schedule?.length ? 62 : 0;
     N = SCALES.find((s) => cw / s <= area.w - legendW - 16 && chh / s <= area.h - 16) ?? 1000;
     content = build(N);
   }
@@ -204,11 +249,12 @@ export function buildSheet(p: Project, spec: SheetSpec, lang: Lang = 'uk', sheet
   const prims: Prim2[] = [...framePrims(w, h)];
   if (content.prims.length) {
     const bb = primsBBox(content.prims);
-    const legendW = content.legend.length ? 55 : 0;
+    const legendW = content.legend.length || content.schedule?.length ? 62 : 0;
     const cx = area.x + (area.w - legendW) / 2;
     const cy = area.y + area.h / 2;
     prims.push(...transform(content.prims, { scale: 1 / N, tx: cx - (bb.minX + bb.maxX) / 2 / N, ty: cy - (bb.minY + bb.maxY) / 2 / N }));
     if (content.legend.length) prims.push(...legendPrims(content.legend, w - 5 - legendW, 14, T('Умовні позначення', 'Условные обозначения')));
+    if (content.schedule?.length) prims.push(...schedulePrims(content.schedule, w - 5 - legendW, 14, lang));
   } else {
     prims.push(text(w / 2, h / 2, T('Немає даних для цього аркуша', 'Нет данных для этого листа'), 4, { color: '#6b7280' }));
   }

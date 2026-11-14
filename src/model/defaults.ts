@@ -1,9 +1,9 @@
 import { defaultCabinetCatalog } from '../cabinet/catalog';
 import { DEFAULT_CEILING_FINISH, DEFAULT_FLOOR_FINISH, DEFAULT_WALL_FINISH, defaultFinishes, wallMaterial } from '../catalog/finishes';
 import { newId } from './ids';
-import type { ElGroup, Level, Opening, Project, ProjectKind, Site, Vec2, Wall } from './types';
+import type { ElGroup, ElementStatus, Level, Opening, Project, ProjectKind, Site, Vec2, Wall } from './types';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 3;
 
 export function createLevel(name: string, elevation = 0, height = 2700): Level {
   return {
@@ -36,7 +36,17 @@ export function createWall(a: Vec2, b: Vec2, opts: Partial<Wall> = {}): Wall {
     finishL: opts.finishL ?? DEFAULT_WALL_FINISH,
     finishR: opts.finishR ?? DEFAULT_WALL_FINISH,
     ...(opts.height ? { height: opts.height } : {}),
+    ...(opts.status ? { status: opts.status } : {}),
+    ...(opts.arc ? { arc: opts.arc } : {}),
   };
+}
+
+/**
+ * Статус новой стены: пока в квартире не зафиксировано существующее состояние, стены считаются
+ * существующими (идёт обводка техпаспорта); после фиксации и в доме — новыми.
+ */
+export function defaultWallStatus(p: Pick<Project, 'kind' | 'baseline'>): ElementStatus {
+  return p.kind === 'apartment' && !p.baseline ? 'existing' : 'new';
 }
 
 export function createOpening(wallId: string, kind: Opening['kind'], pos: number, opts: Partial<Opening> = {}): Opening {

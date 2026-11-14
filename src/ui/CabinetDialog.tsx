@@ -1,15 +1,19 @@
 // Конструктор корпусной мебели: параметры изделия, 3D-превью, деталировка, раскрой, фурнитура, материалы.
+import { Invalidator } from '../view3d/Invalidator';
 import { OrbitControls } from '@react-three/drei';
-import { Canvas } from '@react-three/fiber';
-import { useEffect, useMemo, useState } from 'react';
+import { Canvas, useThree } from '@react-three/fiber';
+import type { ThreeEvent } from '@react-three/fiber';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import * as THREE from 'three';
 import { buildCutList, cutSize, edgeLabel, edgeTotals, materialTotals } from '../cabinet/cutlist';
 import type { CutRow } from '../cabinet/cutlist';
 import { generateCabinet } from '../cabinet/generate';
 import { nestCutList } from '../cabinet/nesting';
 import type { MaterialNest } from '../cabinet/nesting';
-import { BUILTIN_TEMPLATES, cloneDesign, newColumn } from '../cabinet/templates';
-import type { CabinetCatalog, CabinetDesign, CabinetResult, EdgeSides, Part } from '../cabinet/types';
+import { BUILTIN_TEMPLATES, autoDrawerCount, cloneDesign, newColumn } from '../cabinet/templates';
+import type { CabinetCatalog, CabinetDesign, CabinetResult, EdgeSides, Grain, Part } from '../cabinet/types';
 import type { Prim3 } from '../catalog/registry';
+import { TEXTURES, textureDef, textureUrl } from '../catalog/textures';
 import { download, safeName, toCsv } from '../export/csv';
 import { fmt, useT } from '../i18n';
 import { newId } from '../model/ids';
@@ -17,7 +21,8 @@ import type { Project } from '../model/types';
 import { deleteTemplate, listTemplates, saveTemplate } from '../store/persistence';
 import { useProject } from '../store/projectStore';
 import { useUi } from '../store/uiStore';
-import { primsToGroup } from '../view3d/build';
+import { cabinetPartPrims, primsToMeshes } from '../view3d/build';
+import { disposeSprite, textSprite } from '../view3d/label';
 import { Dialog } from './Dialog';
 import { Check, Num, NumInput, Section, Select, Text } from './fields';
 
@@ -46,21 +51,39 @@ export function syncCabinetItems(p: Project, d: CabinetDesign): void {
   p.levels.forEach((l) => apply(l.items));
 }
 
-function Preview({ parts, design, showFacades }: { parts: Part[]; design: CabinetDesign; showFacades: boolean }) {
+/** Декоры плит: древесные текстуры библиотеки (волокна вдоль длины листа). */
+const DECOR_TEXTURES = TEXTURES.filter((x) => x.category === 'wood' || x.category === 'stone');
+
+/** Размерная линия в 3D-предпросмотре: отрезок с засечками и подписью. */
+function Dim3({ a, b, label }: { a: [number, number, number]; b: [number, number, number]; label: string }) {
+  const geo = useMemo(() => {
+    const va = new THREE.Vector3(...a);
+    const vb = new THREE.Vector3(...b);
+    const dir = vb.clone().sub(va).normalize();
+    // засечки перпендикулярно линии
+    const side = Math.abs(dir.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+    const tick = side.multiplyScalar(0.035);
+    return new THREE.BufferGeometry().setFromPoints([va, vb, va.clone().add(tick), va.clone().sub(tick), vb.clone().add(tick), vb.clone().sub(tick)]);
+  }, [a, b]);
+  useEffect(() => () => geo.dispose(), [geo]);
+  const sprite = useMemo(() => textSprite(label), [label]);
+  useEffect(() => () => disposeSprite(sprite), [sprite]);
+  return (
+    <>
+      <lineSegments geometry={geo}>
+        <lineBasicMaterial color="#2563eb" />
+      </lineSegments>
+      <primitive object={sprite} position={[(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2]} />
+    </>
+  );
+}
+
+function Preview({ parts, design, showFacades, selKey, onSelect, showDims }: { parts: Part[]; design: CabinetDesign; showFacades: boolean; selKey: string | null; onSelect: (key: string | null) => void; showDims: boolean }) {
   const catalog = useProject((s) => s.project.cabinetCatalog);
-  const group = useMemo(() => {
-    const prims: Prim3[] = [];
-    let depth = design.depth;
-    for (const p of parts) {
-      if (!p.box) continue;
-      const isFacade = p.role === 'facade' || p.role === 'drawerFront' || p.role === 'slidingDoor';
-      if (isFacade && !showFacades) continue;
-      depth = Math.max(depth, p.box.y + p.box.sy);
-      const board = catalog.boards.find((b) => b.id === p.materialId);
-      prims.push({ t: 'box', x: p.box.x, y: p.box.y, z: p.box.z, w: p.box.sx, d: p.box.sy, h: p.box.sz, c: isFacade ? (design.color ?? shade(board?.color ?? '#cdb58a')) : (board?.color ?? '#cdb58a'), m: 'wood' });
-    }
-    return primsToGroup(prims, { w: design.width, d: depth });
-  }, [parts, design.width, design.depth, design.color, showFacades, catalog.boards]);
+  const { group, depth } = useMemo(() => {
+    const { prims, depth } = cabinetPartPrims(parts, design, catalog, { facades: showFacades });
+    return { group: primsToMeshes(prims, { w: design.width, d: depth }), depth };
+  }, [parts, design, showFacades, catalog]);
   useEffect(
     () => () =>
       group.traverse((c) => {
@@ -69,18 +92,85 @@ function Preview({ parts, design, showFacades }: { parts: Part[]; design: Cabine
       }),
     [group],
   );
+  // контур выбранной детали
+  const outline = useMemo(() => {
+    const mesh = selKey ? (group.children.find((c) => c.userData.key === selKey) as THREE.Mesh | undefined) : undefined;
+    return mesh ? new THREE.EdgesGeometry(mesh.geometry) : null;
+  }, [group, selKey]);
+  useEffect(() => () => outline?.dispose(), [outline]);
   const size = Math.max(design.width, design.height) / 1000;
+  const W = design.width / 1000;
+  const H = design.height / 1000;
+  const D = depth / 1000;
+  const off = 0.12;
   return (
-    <Canvas camera={{ position: [size * 0.9, design.height / 1000 / 2 + size * 0.35, size * 1.6], fov: 40, near: 0.05, far: 100 }} frameloop="demand" dpr={[1, 1.75]} gl={{ preserveDrawingBuffer: true }}>
+    <Canvas camera={{ position: [size * 0.9, design.height / 1000 / 2 + size * 0.35, size * 1.6], fov: 40, near: 0.05, far: 100 }} frameloop="demand" dpr={[1, 1.75]} gl={{ preserveDrawingBuffer: true }} onPointerMissed={() => onSelect(null)}>
       <color attach="background" args={['#eef1f4']} />
       <ambientLight intensity={0.8} />
       <directionalLight position={[3, 5, 4]} intensity={1.1} />
       <directionalLight position={[-4, 3, -2]} intensity={0.4} />
-      <primitive object={group} />
+      <primitive
+        object={group}
+        onClick={(e: ThreeEvent<MouseEvent>) => {
+          if (e.delta > 4) return;
+          e.stopPropagation();
+          const key = e.object.userData.key as string | undefined;
+          if (key) onSelect(key);
+        }}
+      />
+      {outline && (
+        <lineSegments geometry={outline} renderOrder={5}>
+          <lineBasicMaterial color="#f97316" depthTest={false} />
+        </lineSegments>
+      )}
+      {showDims && (
+        <>
+          <Dim3 a={[-W / 2, 0, D / 2 + off]} b={[W / 2, 0, D / 2 + off]} label={String(Math.round(design.width))} />
+          <Dim3 a={[-W / 2 - off, 0, D / 2]} b={[-W / 2 - off, H, D / 2]} label={String(Math.round(design.height))} />
+          <Dim3 a={[W / 2 + off, 0, -D / 2]} b={[W / 2 + off, 0, D / 2]} label={String(Math.round(depth))} />
+        </>
+      )}
+      <PreviewProbe group={group} />
+      <Invalidator />
       <gridHelper args={[8, 16, '#c5ccd6', '#dde2e8']} />
       <OrbitControls target={[0, design.height / 2000, 0]} makeDefault />
     </Canvas>
   );
+}
+
+/** Отладочный доступ для e2e: экранные координаты центров деталей в предпросмотре. */
+function PreviewProbe({ group }: { group: THREE.Group }) {
+  const camera = useThree((s) => s.camera);
+  const gl = useThree((s) => s.gl);
+  useEffect(() => {
+    const w = window as unknown as Record<string, unknown>;
+    w.__hbCabParts = () => {
+      const r = gl.domElement.getBoundingClientRect();
+      camera.updateMatrixWorld();
+      return group.children
+        .filter((c) => c.userData.key)
+        .map((c) => {
+          const box = new THREE.Box3().setFromObject(c);
+          const v = box.getCenter(new THREE.Vector3());
+          const size = box.getSize(new THREE.Vector3());
+          const p = v.clone().project(camera);
+          return { key: c.userData.key as string, x: r.left + ((p.x + 1) / 2) * r.width, y: r.top + ((1 - p.y) / 2) * r.height, cx: v.x, cy: v.y, cz: v.z, sx: size.x, sy: size.y, sz: size.z };
+        });
+    };
+    // подписи размерных линий, видимые в сцене
+    w.__hbCabDims = () => {
+      const out: string[] = [];
+      group.parent?.traverse((o) => {
+        if ((o as THREE.Sprite).isSprite && typeof o.userData.label === 'string') out.push(o.userData.label);
+      });
+      return out;
+    };
+    return () => {
+      delete w.__hbCabParts;
+      delete w.__hbCabDims;
+    };
+  }, [group, camera, gl]);
+  return null;
 }
 
 function shade(hex: string): string {
@@ -104,8 +194,12 @@ function EdgeSelect({ value, onChange, catalog }: { value: string | null; onChan
   );
 }
 
-function CutListTab({ design, rows, result, catalog }: { design: CabinetDesign; rows: CutRow[]; result: CabinetResult; catalog: CabinetCatalog }) {
+function CutListTab({ design, rows, result, catalog, selKey, onSelect }: { design: CabinetDesign; rows: CutRow[]; result: CabinetResult; catalog: CabinetCatalog; selKey: string | null; onSelect: (key: string | null) => void }) {
   const { t, ls } = useT();
+  const selRow = useRef<HTMLTableRowElement>(null);
+  useEffect(() => {
+    selRow.current?.scrollIntoView({ block: 'center' });
+  }, []);
   const board = (id: string) => catalog.boards.find((b) => b.id === id);
   const setEdge = (row: CutRow, side: keyof EdgeSides, v: string | null) =>
     updateDesign(design.id, (d) => {
@@ -125,11 +219,21 @@ function CutListTab({ design, rows, result, catalog }: { design: CabinetDesign; 
         } else d.overrides[key] = { ...d.overrides[key], materialId: v };
       }
     });
+  const setGrain = (row: CutRow, v: Grain) =>
+    updateDesign(design.id, (d) => {
+      for (const key of row.partKeys) {
+        if (key.startsWith('manual-')) {
+          const m = d.extraParts.find((x) => `manual-${x.id}` === key);
+          if (m) m.grain = v;
+        } else d.overrides[key] = { ...d.overrides[key], grain: v };
+      }
+    });
+  const grainName = (g: Grain) => (g === 'length' ? t('уздовж', 'вдоль') : g === 'width' ? t('упоперек', 'поперёк') : t('без', 'без'));
   const edges = edgeTotals(result.parts);
   const mats = materialTotals(rows);
   const exportCsv = () => {
     const head = ['№', t('Деталь', 'Деталь'), t('Матеріал', 'Материал'), t('Товщина', 'Толщина'), t('Довжина', 'Длина'), t('Ширина', 'Ширина'), t('Пильна довжина', 'Пильная длина'), t('Пильна ширина', 'Пильная ширина'), t('К-сть', 'Кол-во'), t('Крайка L1', 'Кромка L1'), t('Крайка L2', 'Кромка L2'), t('Крайка W1', 'Кромка W1'), t('Крайка W2', 'Кромка W2'), t('Текстура', 'Текстура')];
-    const body = rows.map((r, i) => [i + 1, ls(r.name), ls(board(r.materialId)?.name), r.thickness, r.length, r.width, r.cutLength, r.cutWidth, r.qty, edgeLabel(catalog, r.edges.l1), edgeLabel(catalog, r.edges.l2), edgeLabel(catalog, r.edges.w1), edgeLabel(catalog, r.edges.w2), r.grain === 'length' ? t('уздовж', 'вдоль') : '—']);
+    const body = rows.map((r, i) => [i + 1, ls(r.name), ls(board(r.materialId)?.name), r.thickness, r.length, r.width, r.cutLength, r.cutWidth, r.qty, edgeLabel(catalog, r.edges.l1), edgeLabel(catalog, r.edges.l2), edgeLabel(catalog, r.edges.w1), edgeLabel(catalog, r.edges.w2), grainName(r.grain)]);
     const tail: (string | number)[][] = [[], [t('Крайка', 'Кромка'), t('Чиста, м', 'Чистая, м'), t('Із запасом, м', 'С запасом, м')], ...edges.map((e) => [ls(catalog.bands.find((b) => b.id === e.bandId)?.name), e.netM, e.grossM])];
     download(`${safeName(design.name)}_detali.csv`, toCsv([head, ...body, ...tail]), 'text/csv;charset=utf-8');
   };
@@ -154,6 +258,7 @@ function CutListTab({ design, rows, result, catalog }: { design: CabinetDesign; 
             <th>L2</th>
             <th>W1</th>
             <th>W2</th>
+            <th title={t('Напрямок текстури відносно довжини деталі', 'Направление текстуры относительно длины детали')}>{t('Текстура', 'Текстура')}</th>
             <th>{t('К-сть', 'Кол-во')}</th>
             <th />
           </tr>
@@ -166,8 +271,9 @@ function CutListTab({ design, rows, result, catalog }: { design: CabinetDesign; 
                 const m = d.extraParts.find((x) => x.id === manual?.id);
                 if (m) fn(m);
               });
+            const picked = !!selKey && r.partKeys.includes(selKey);
             return (
-              <tr key={r.key}>
+              <tr key={r.key} ref={picked ? selRow : undefined} className={picked ? 'row-sel' : ''} data-part-row={r.partKeys.join(' ')} data-part-sel={picked ? '1' : undefined} onClick={(e) => !(e.target as HTMLElement).closest('input,select,button') && onSelect(picked ? null : r.partKeys[0])}>
                 <td className="center">{i + 1}</td>
                 <td>{manual ? <input type="text" value={manual.name} onChange={(e) => mutManual((m) => (m.name = e.target.value))} /> : ls(r.name)}</td>
                 <td>
@@ -198,6 +304,13 @@ function CutListTab({ design, rows, result, catalog }: { design: CabinetDesign; 
                     <EdgeSelect value={r.edges[side]} catalog={catalog} onChange={(v) => setEdge(r, side, v)} />
                   </td>
                 ))}
+                <td className="edge-sel">
+                  <select value={r.grain} onChange={(e) => setGrain(r, e.target.value as Grain)} data-grain disabled={!board(r.materialId)?.grain} title={board(r.materialId)?.grain ? '' : t('Матеріал без текстури', 'Материал без текстуры')}>
+                    <option value="length">{t('уздовж', 'вдоль')}</option>
+                    <option value="width">{t('упоперек', 'поперёк')}</option>
+                    <option value="none">{t('без', 'без')}</option>
+                  </select>
+                </td>
                 <td className="center">{manual ? <NumInput value={manual.qty} min={1} max={500} digits={0} onChange={(v) => mutManual((m) => (m.qty = Math.round(v)))} /> : r.qty}</td>
                 <td>
                   {manual && (
@@ -210,7 +323,7 @@ function CutListTab({ design, rows, result, catalog }: { design: CabinetDesign; 
             );
           })}
           <tr className="total">
-            <td colSpan={9}>{t('Разом деталей', 'Всего деталей')}</td>
+            <td colSpan={10}>{t('Разом деталей', 'Всего деталей')}</td>
             <td className="center">{rows.reduce((s, r) => s + r.qty, 0)}</td>
             <td />
           </tr>
@@ -280,7 +393,7 @@ function NestingTab({ design, nests, catalog }: { design: CabinetDesign; nests: 
         return (
           <div key={n.materialId} data-nest={n.materialId}>
             <h4>
-              {ls(b?.name)} — {t('листів', 'листов')}: <b>{n.sheets.length}</b> ({n.sheetL}×{n.sheetW} мм) · {t('відходи', 'отходы')}: {fmt(n.waste * 100, 1)}%
+              {ls(b?.name)} — {t('листів', 'листов')}: <b>{n.sheets.length}</b> ({n.sheetL}×{n.sheetW} мм) · {t('деталі', 'детали')}: {fmt(n.partsArea / 1e6)} м² · {t('відходи без ділових залишків', 'отходы без деловых остатков')}: <b data-waste>{fmt(n.waste * 100, 1)}%</b>
             </h4>
             {n.unplaced.length > 0 && (
               <div className="warn-box">
@@ -296,11 +409,28 @@ function NestingTab({ design, nests, catalog }: { design: CabinetDesign; nests: 
                   </b>
                   <span className="muted">
                     {t('використано', 'использовано')} {fmt(sh.usage * 100, 1)}% · {sh.placements.length} {t('дет.', 'дет.')}
+                    {sh.offcuts.length > 0 && ` · ${t('ділові залишки', 'деловые остатки')}: ${sh.offcuts.map((o) => `${Math.round(o.l)}×${Math.round(o.w)}`).join(', ')} мм`}
                   </span>
                 </div>
                 <svg viewBox={`0 0 ${n.sheetL} ${n.sheetW}`} preserveAspectRatio="xMidYMid meet">
                   <rect x={0} y={0} width={n.sheetL} height={n.sheetW} fill="#efe9dc" stroke="#6b7280" strokeWidth={4} />
                   <rect x={catalog.trim} y={catalog.trim} width={n.sheetL - 2 * catalog.trim} height={n.sheetW - 2 * catalog.trim} fill="none" stroke="#b45309" strokeWidth={2} strokeDasharray="20 12" />
+                  {sh.offcuts.map((o, oi) => (
+                    <g data-offcut key={oi}>
+                      <rect x={o.x} y={o.y} width={o.l} height={o.w} fill="#dcfce7" stroke="#16a34a" strokeWidth={3} strokeDasharray="24 14" />
+                      {o.l > 400 && o.w > 150 && (
+                        <text x={o.x + o.l / 2} y={o.y + o.w / 2} fontSize={Math.min(48, o.w / 3)} textAnchor="middle" dominantBaseline="central" fill="#15803d">
+                          {t('залишок', 'остаток')} {Math.round(o.l)}×{Math.round(o.w)}
+                        </text>
+                      )}
+                    </g>
+                  ))}
+                  {b?.grain && (
+                    <g opacity={0.5}>
+                      <line x1={60} y1={n.sheetW - 40} x2={360} y2={n.sheetW - 40} stroke="#92400e" strokeWidth={6} />
+                      <polygon points={`360,${n.sheetW - 40} 320,${n.sheetW - 60} 320,${n.sheetW - 20}`} fill="#92400e" />
+                    </g>
+                  )}
                   {sh.placements.map((p) => {
                     if (!colorOf.has(p.label)) colorOf.set(p.label, SHEET_COLORS[colorOf.size % SHEET_COLORS.length]);
                     const fs = Math.max(22, Math.min(60, Math.min(p.l / 7, p.w / 2.2)));
@@ -368,7 +498,7 @@ function HardwareTab({ design, result }: { design: CabinetDesign; result: Cabine
 }
 
 function MaterialsTab({ catalog }: { catalog: CabinetCatalog }) {
-  const { t, lang } = useT();
+  const { t, ls, lang } = useT();
   const mut = (fn: (c: CabinetCatalog) => void) =>
     useProject.getState().update((p) => {
       fn(p.cabinetCatalog);
@@ -388,7 +518,8 @@ function MaterialsTab({ catalog }: { catalog: CabinetCatalog }) {
             <th>{t('Назва', 'Название')}</th>
             <th>{t('Товщина', 'Толщина')}</th>
             <th>{t('Лист Д×Ш', 'Лист Д×Ш')}</th>
-            <th>{t('Текстура', 'Текстура')}</th>
+            <th title={t('Є напрямок текстури: деталі не повертаються під час розкрою', 'Есть направление текстуры: детали не поворачиваются при раскрое')}>{t('Напрямок', 'Направление')}</th>
+            <th>{t('Декор (текстура)', 'Декор (текстура)')}</th>
             <th>{t('Колір', 'Цвет')}</th>
             <th />
           </tr>
@@ -407,6 +538,32 @@ function MaterialsTab({ catalog }: { catalog: CabinetCatalog }) {
               </td>
               <td className="center">
                 <input type="checkbox" checked={b.grain} onChange={(e) => mut((c) => (c.boards[i].grain = e.target.checked))} />
+              </td>
+              <td>
+                <span className="row">
+                  <span className="tex-thumb" style={{ width: 26, height: 26, backgroundColor: b.color, backgroundImage: b.textureId ? `url("${textureUrl(b.textureId)}")` : undefined }} />
+                  <select
+                    value={b.textureId ?? ''}
+                    data-decor={b.id}
+                    onChange={(e) =>
+                      mut((c) => {
+                        const tex = textureDef(e.target.value);
+                        if (tex) {
+                          c.boards[i].textureId = tex.id;
+                          c.boards[i].color = tex.avg;
+                          c.boards[i].grain = true;
+                        } else delete c.boards[i].textureId;
+                      })
+                    }
+                  >
+                    <option value="">{t('— однотонний —', '— однотонный —')}</option>
+                    {DECOR_TEXTURES.map((x) => (
+                      <option key={x.id} value={x.id}>
+                        {ls(x.name)}
+                      </option>
+                    ))}
+                  </select>
+                </span>
               </td>
               <td>
                 <input type="color" value={b.color} onChange={(e) => mut((c) => (c.boards[i].color = e.target.value))} />
@@ -538,7 +695,8 @@ function DesignForm({ design, catalog }: { design: CabinetDesign; catalog: Cabin
             mut((d) => {
               d.facade.type = v as CabinetDesign['facade']['type'];
               if (v === 'hinged') d.columns.forEach((c) => c.doors === 0 && (c.doors = 1));
-              if (v === 'drawers') d.columns.forEach((c) => c.drawers === 0 && (c.drawers = 3));
+              // фасад «шухляди»: кількість підбирається так, щоб фасад був ≈ 200 мм, а не на всю висоту шафи
+              if (v === 'drawers') d.columns.forEach((c) => (c.drawers = Math.max(c.drawers, autoDrawerCount(d))));
             })
           }
         />
@@ -550,7 +708,11 @@ function DesignForm({ design, catalog }: { design: CabinetDesign; catalog: Cabin
             <Num label={t('Перехлест', 'Перехлёст')} value={f.slidingOverlap} min={0} max={80} unit="мм" onChange={(v) => mut((d) => (d.facade.slidingOverlap = v))} />
             <Num label={t('Зона під систему купе', 'Зона под систему купе')} value={f.slidingZone} min={60} max={150} unit="мм" onChange={(v) => mut((d) => (d.facade.slidingZone = v))} />
             <Num label={t('Вирахування висоти дверей', 'Вычет высоты двери')} value={f.slidingHeightDeduct} min={0} max={100} unit="мм" onChange={(v) => mut((d) => (d.facade.slidingHeightDeduct = v))} />
-            <Check label={t('Полотна з плити — у деталювання', 'Полотна из плиты — в деталировку')} value={f.slidingInfill} onChange={(v) => mut((d) => (d.facade.slidingInfill = v))} />
+            <Num label={t('Ширина вертикального профілю', 'Ширина вертикального профиля')} value={f.slidingProfile ?? 26} min={10} max={60} unit="мм" onChange={(v) => mut((d) => (d.facade.slidingProfile = v))} />
+            <Num label={t('Наповнення вужче за двері на', 'Наполнение уже двери на')} value={f.slidingInfillDeductW ?? 36} min={0} max={120} unit="мм" onChange={(v) => mut((d) => (d.facade.slidingInfillDeductW = v))} />
+            <Num label={t('Наповнення нижче за двері на', 'Наполнение ниже двери на')} value={f.slidingInfillDeductH ?? 60} min={0} max={160} unit="мм" onChange={(v) => mut((d) => (d.facade.slidingInfillDeductH = v))} />
+            <Check label={t('Наповнення з плити — у деталювання та розкрій', 'Наполнение из плиты — в деталировку и раскрой')} value={f.slidingInfill} onChange={(v) => mut((d) => (d.facade.slidingInfill = v))} />
+            <p className="hint">{t('Розміри дверей і наповнення залежать від системи профілю — звірте з таблицею виробника.', 'Размеры дверей и наполнения зависят от системы профиля — сверьте с таблицей производителя.')}</p>
           </>
         )}
         {(f.type === 'hinged' || f.type === 'drawers') && <Check label={t('Ручки', 'Ручки')} value={f.handles} onChange={(v) => mut((d) => (d.facade.handles = v))} />}
@@ -597,6 +759,8 @@ export function CabinetDialog() {
   const editId = useUi((s) => s.cabinetEditId);
   const [tab, setTab] = useState<'preview' | 'cut' | 'nest' | 'hw' | 'mat'>('preview');
   const [showFacades, setShowFacades] = useState(true);
+  const [showDims, setShowDims] = useState(true);
+  const [selKey, setSelKey] = useState<string | null>(null);
   const [userTemplates, setUserTemplates] = useState<CabinetDesign[]>([]);
   const design = project.cabinets.find((c) => c.id === editId) ?? null;
   const catalog = project.cabinetCatalog;
@@ -611,6 +775,7 @@ export function CabinetDialog() {
 
   const result = useMemo(() => (design ? generateCabinet(design, catalog) : null), [design, catalog]);
   const rows = useMemo(() => (result ? buildCutList(result.parts, catalog) : []), [result, catalog]);
+  const selPart = (selKey && result?.parts.find((p) => p.key === selKey)) || null;
   const nests = useMemo(() => (tab === 'nest' || tab === 'preview' ? nestCutList(rows, catalog) : []), [rows, catalog, tab]);
 
   const createFrom = (d: CabinetDesign) => {
@@ -745,9 +910,14 @@ export function CabinetDialog() {
                     </button>
                   ))}
                   {tab === 'preview' && (
-                    <label className="mini-check" style={{ marginLeft: 12, alignSelf: 'center' }}>
-                      <input type="checkbox" checked={showFacades} onChange={(e) => setShowFacades(e.target.checked)} /> {t('показувати фасади', 'показывать фасады')}
-                    </label>
+                    <>
+                      <label className="mini-check" style={{ marginLeft: 12, alignSelf: 'center' }}>
+                        <input type="checkbox" checked={showFacades} onChange={(e) => setShowFacades(e.target.checked)} /> {t('показувати фасади', 'показывать фасады')}
+                      </label>
+                      <label className="mini-check" style={{ alignSelf: 'center' }}>
+                        <input type="checkbox" checked={showDims} onChange={(e) => setShowDims(e.target.checked)} data-toggle="dims" /> {t('розміри', 'размеры')}
+                      </label>
+                    </>
                   )}
                 </div>
                 {result.warnings.length > 0 && (
@@ -760,10 +930,23 @@ export function CabinetDialog() {
                 <div className="cab-content">
                   {tab === 'preview' && (
                     <div className="cab-preview">
-                      <Preview parts={result.parts} design={design} showFacades={showFacades} />
+                      <Preview parts={result.parts} design={design} showFacades={showFacades} selKey={selKey} onSelect={setSelKey} showDims={showDims} />
+                      {selPart && (
+                        <div className="part-info" data-part-info={selPart.key}>
+                          <b>{ls(selPart.name)}</b> · {fmt(selPart.length, 1)} × {fmt(selPart.width, 1)} × {fmt(selPart.thickness, 1)} мм · {ls(catalog.boards.find((b) => b.id === selPart.materialId)?.name) || t('профіль', 'профиль')}
+                          {selPart.virtual ? (
+                            <span className="muted"> · {t('лише в 3D (у деталювання не входить)', 'только в 3D (в деталировку не входит)')}</span>
+                          ) : (
+                            <button className="link" data-action="to-cutlist" onClick={() => setTab('cut')}>
+                              {t('у деталюванні →', 'в деталировке →')}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      <p className="hint part-hint">{t('Клацніть деталь, щоб виділити її в деталюванні.', 'Щёлкните деталь, чтобы выделить её в деталировке.')}</p>
                     </div>
                   )}
-                  {tab === 'cut' && <CutListTab design={design} rows={rows} result={result} catalog={catalog} />}
+                  {tab === 'cut' && <CutListTab design={design} rows={rows} result={result} catalog={catalog} selKey={selKey} onSelect={setSelKey} />}
                   {tab === 'nest' && <NestingTab design={design} nests={nests} catalog={catalog} />}
                   {tab === 'hw' && <HardwareTab design={design} result={result} />}
                   {tab === 'mat' && <MaterialsTab catalog={catalog} />}

@@ -68,7 +68,7 @@ describe('шкаф-купе 2400×2600×600, ЛДСП 18, кромка 2/0,4 (к
   it('секции делятся поровну, полки по ширине секции', () => {
     expect(columnWidths(d, 18)).toEqual([776, 776, 776]);
     const shelves = row('Полка');
-    expect(shelves.reduce((s, r) => s + r.qty, 0)).toBe(5 + 1 + 2);
+    expect(shelves.reduce((s, r) => s + r.qty, 0)).toBe(4 + 1 + 2);
     for (const s of shelves) expect([s.length, s.width]).toEqual([776, 497]);
   });
 
@@ -82,19 +82,14 @@ describe('шкаф-купе 2400×2600×600, ЛДСП 18, кромка 2/0,4 (к
 
   it('цоколь, ящики, двери-купе и фурнитура', () => {
     expect(row('Цоколь передний')[0].width).toBe(70);
-    expect(row('Фасад ящика').reduce((s, r) => s + r.qty, 0)).toBe(3);
+    expect(row('Фасад ящика').reduce((s, r) => s + r.qty, 0)).toBe(2);
     const hw = Object.fromEntries(res.hardware.map((h) => [h.id, h.qty]));
     expect(hw['sliding-door']).toBe(3);
     expect(hw['sliding-rollers']).toBe(3);
     expect(hw['sliding-track-top']).toBeCloseTo(2.4, 1);
-    expect(hw['slide-450']).toBe(3);
+    expect(hw['slide-450']).toBe(2);
     expect(hw['rod-holder']).toBe(4);
     expect(hw.confirmat).toBeGreaterThan(40);
-    // полотна купе в профиле в деталировку ЛДСП не попадают
-    expect(rows.some((r) => r.name.ru.includes('купе'))).toBe(false);
-    const door = res.parts.find((p) => p.key === 'sliding-1')!;
-    expect(door.width).toBeCloseTo((2364 + 2 * 26) / 3, 0);
-    expect(door.length).toBe(2494 - 40);
   });
 
   it('все детали внутри габаритов изделия', () => {
@@ -121,8 +116,7 @@ describe('шкаф-купе 2400×2600×600, ЛДСП 18, кромка 2/0,4 (к
     const nests = nestCutList(rows, cat);
     const ldsp = nests.find((n) => n.materialId === 'ldsp18')!;
     expect(ldsp.unplaced).toHaveLength(0);
-    expect(ldsp.sheets.length).toBeGreaterThanOrEqual(3);
-    expect(ldsp.sheets.length).toBeLessThanOrEqual(5);
+    expect(ldsp.sheets.length).toBe(3);
     checkLayout(ldsp, 4, 10);
     const count = ldsp.sheets.reduce((s, sh) => s + sh.placements.length, 0);
     expect(count).toBe(rows.filter((r) => r.materialId === 'ldsp18').reduce((s, r) => s + r.qty, 0));

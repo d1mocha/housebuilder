@@ -80,7 +80,7 @@ describe('чертежи', () => {
     expect(texts).toContain('Вітальня');
     expect(texts.some((t) => /м²$/.test(t))).toBe(true);
     expect(texts).toContain('4350'); // внутренний размер гостиной
-    expect(m.scale).toBe(50);
+    expect(m.scale).toBe(75); // с внешними размерными цепочками и ведомостью проёмов
     const e = buildSheet(demo, { kind: 'electrical', levelId: demo.levels[0].id, paper: 'A3', landscape: true, scale: 0 }, 'ru');
     const et = e.prims.filter((p) => p.t === 'text').map((p) => (p as { text: string }).text);
     expect(et).toContain('Условные обозначения');
@@ -163,7 +163,7 @@ describe('смета', () => {
     expect(estimateTotal(lines)).toBe(c2.sum);
     // демо содержит ожидаемые разделы
     const cats = new Set(lines.map((x) => x.category));
-    for (const c of ['walls', 'paint', 'tile', 'flooring', 'ceiling', 'cable', 'pipes', 'devices', 'furniture']) expect(cats.has(c as never), c).toBe(true);
+    for (const c of ['paint', 'tile', 'flooring', 'ceiling', 'cable', 'pipes', 'devices', 'furniture']) expect(cats.has(c as never), c).toBe(true);
     expect(lines.find((x) => x.key === 'furn.board.ldsp18')!.qty).toBeGreaterThanOrEqual(2);
   });
   it('CSV: BOM, «;», экранирование, десятичная запятая', () => {

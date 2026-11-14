@@ -3,7 +3,7 @@ import { itemDef, num, routeDef } from '../catalog/registry';
 import type { Prim2 } from '../draw2d/prims';
 import { add, circlePolygon, convexHull } from '../model/geometry';
 import type { Project, Vec2 } from '../model/types';
-import { detectRooms, fromRing, unionPolys } from '../model/walls';
+import { detectRooms, fromRing, geomOf, unionPolys } from '../model/walls';
 import { shadowVector, sunPosition } from './sun';
 
 /** Полная высота здания, мм. */
@@ -32,7 +32,7 @@ export function siteShadowPrims(p: Project): Prim2[] {
   const sv = shadowVector(sun, site.north, buildingHeight(p));
   if (!sv) return [];
   const ground = p.levels[0];
-  if (ground) for (const o of detectRooms(ground.walls).outline) polys.push(...extrudeShadow(o, sv));
+  if (ground) for (const o of detectRooms(geomOf(ground).walls).outline) polys.push(...extrudeShadow(o, sv));
   for (const it of site.items) {
     const def = itemDef(it.kind);
     if (!def) continue;

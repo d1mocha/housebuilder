@@ -3,14 +3,15 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { generateCabinet } from '../cabinet/generate';
+import type { CabinetCatalog, CabinetDesign, Part } from '../cabinet/types';
 import { wallMaterial } from '../catalog/finishes';
 import { itemDef, num, routeDef, zoneDef } from '../catalog/registry';
 import type { Mat3, Prim3 } from '../catalog/registry';
 import { itemSize } from '../draw2d/plan';
 import { add, bbox, dist, mul, norm, perp, sub } from '../model/geometry';
 import type { Finish, Item, Level, Opening, Project, Room, Route, Sel, Vec2, Wall, Zone } from '../model/types';
-import { detectRooms, wallDir, wallLength, wallPolygon } from '../model/walls';
-import { finishMaterial, partMaterial } from './materials';
+import { baseWallId, detectRooms, geomOf, wallDir, wallLength, wallPolygon } from '../model/walls';
+import { decorMaterial, finishMaterial, partMaterial } from './materials';
 
 const MM = 0.001;
 
@@ -193,19 +194,20 @@ export function buildOpeningObject(o: Opening, wall: Wall, H: number): THREE.Gro
 export function buildWalls(project: Project, level: Level): THREE.Group {
   const g = new THREE.Group();
   g.name = 'walls';
-  for (const w of level.walls) {
+  const gm = geomOf(level);
+  for (const w of gm.walls) {
     if (wallLength(w) < 1) continue;
     const H = w.height ?? level.height;
-    const geo = buildWallGeometry(w, level.walls, level.openings, H);
+    const geo = buildWallGeometry(w, gm.walls, gm.openings, H);
     const mats = [finishMaterial(finishOf(project, w.finishL), 'wall'), finishMaterial(finishOf(project, w.finishR), 'wall'), partMaterial(wallMaterial(w.material).estimate === 'gkl' ? '#e5e7eb' : '#d9d5cd')];
     const mesh = new THREE.Mesh(geo, mats);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
-    mesh.userData.sel = { type: 'wall', id: w.id, scope: level.id } satisfies Sel;
+    mesh.userData.sel = { type: 'wall', id: baseWallId(w.id), scope: level.id } satisfies Sel;
     g.add(mesh);
   }
-  for (const o of level.openings) {
-    const w = level.walls.find((x) => x.id === o.wallId);
+  for (const o of gm.openings) {
+    const w = gm.walls.find((x) => x.id === o.wallId);
     if (!w) continue;
     const og = buildOpeningObject(o, w, w.height ?? level.height);
     og.traverse((c) => {
@@ -268,7 +270,7 @@ export function buildFloors(project: Project, level: Level, withCeiling: boolean
       g.add(ceil);
     }
   }
-  const { outline } = detectRooms(level.walls);
+  const { outline } = detectRooms(geomOf(level).walls);
   const slabMat = partMaterial('#8f9399');
   for (const o of outline) {
     if (o.length < 3) continue;
@@ -295,6 +297,7 @@ function primGeometry(p: Prim3, s: { w: number; d: number }): THREE.BufferGeomet
   if (p.t === 'box') {
     const g = new THREE.BoxGeometry(Math.max(p.w, 1) * MM, Math.max(p.h, 1) * MM, Math.max(p.d, 1) * MM);
     g.translate((ox + p.x + p.w / 2) * MM, (p.z + p.h / 2) * MM, (oz + p.y + p.d / 2) * MM);
+    if (p.tx) grainUv(g, p.ga ?? 'x');
     return g;
   }
   if (p.t === 'cyl') {
@@ -315,15 +318,76 @@ function primGeometry(p: Prim3, s: { w: number; d: number }): THREE.BufferGeomet
   return g;
 }
 
+/**
+ * UV коробки в метрах: U идёт вдоль оси волокон (ось задаётся в системе объекта: x — ширина, y — глубина,
+ * z — высота; в three.js это X, Z и Y). На торцах, перпендикулярных волокнам, берутся две оставшиеся оси.
+ */
+function grainUv(g: THREE.BufferGeometry, ga: 'x' | 'y' | 'z') {
+  const pos = g.attributes.position;
+  const nor = g.attributes.normal;
+  const uv = g.attributes.uv;
+  const grain = ga === 'x' ? 0 : ga === 'z' ? 1 : 2; // индекс оси three.js
+  const comp = (i: number, axis: number) => (axis === 0 ? pos.getX(i) : axis === 1 ? pos.getY(i) : pos.getZ(i));
+  for (let i = 0; i < pos.count; i++) {
+    const n = [Math.abs(nor.getX(i)), Math.abs(nor.getY(i)), Math.abs(nor.getZ(i))];
+    const normal = n[0] > 0.5 ? 0 : n[1] > 0.5 ? 1 : 2;
+    const inPlane = [0, 1, 2].filter((a) => a !== normal);
+    const u = inPlane.includes(grain) ? grain : inPlane[0];
+    const v = inPlane.find((a) => a !== u)!;
+    uv.setXY(i, comp(i, u), comp(i, v));
+  }
+  uv.needsUpdate = true;
+}
+
+/** Ось волокон детали в системе корпуса по её габаритам и направлению текстуры. */
+export function partGrainAxis(part: Part): 'x' | 'y' | 'z' {
+  const b = part.box!;
+  const dims: ['x' | 'y' | 'z', number][] = [
+    ['x', b.sx],
+    ['y', b.sy],
+    ['z', b.sz],
+  ];
+  // ось толщины — та, чей размер ближе всего к толщине плиты
+  const tAxis = [...dims].sort((p, q) => Math.abs(p[1] - part.thickness) - Math.abs(q[1] - part.thickness))[0][0];
+  const rest = dims.filter((d) => d[0] !== tAxis);
+  const lenFirst = Math.abs(rest[0][1] - part.length) <= Math.abs(rest[1][1] - part.length);
+  const lenAxis = lenFirst ? rest[0][0] : rest[1][0];
+  const widAxis = lenFirst ? rest[1][0] : rest[0][0];
+  return part.grain === 'width' ? widAxis : lenAxis;
+}
+
+/** Примитивы деталей изделия: декор плиты — текстурой с направлением волокон, профиль купе — металлом. */
+export function cabinetPartPrims(parts: Part[], design: CabinetDesign, catalog: CabinetCatalog, opts: { facades?: boolean } = {}): { prims: Prim3[]; depth: number } {
+  const prims: Prim3[] = [];
+  let depth = design.depth;
+  for (const part of parts) {
+    if (!part.box) continue;
+    const isFacade = part.role === 'facade' || part.role === 'drawerFront' || part.role === 'slidingDoor' || part.role === 'slidingProfile';
+    if (isFacade && opts.facades === false) continue;
+    depth = Math.max(depth, part.box.y + part.box.sy);
+    const box = { t: 'box' as const, x: part.box.x, y: part.box.y, z: part.box.z, w: part.box.sx, d: part.box.sy, h: part.box.sz, key: part.key };
+    if (part.role === 'slidingProfile') {
+      prims.push({ ...box, c: '#b8bcc2', m: 'metal' });
+      continue;
+    }
+    const board = catalog.boards.find((b) => b.id === part.materialId);
+    // фасады с заданным цветом (крашеный МДФ) — без декора
+    const painted = isFacade && !!design.color;
+    prims.push({ ...box, c: painted ? design.color! : (board?.color ?? '#cdb58a'), m: 'wood', ...(board?.textureId && !painted ? { tx: board.textureId, ga: partGrainAxis(part) } : {}) });
+  }
+  return { prims, depth };
+}
+
 /** Собрать набор примитивов в группу, слив геометрию по материалам. */
 export function primsToGroup(prims: Prim3[], s: { w: number; d: number }): THREE.Group {
   const g = new THREE.Group();
-  const byMat = new Map<string, { geos: THREE.BufferGeometry[]; c: string; m: Mat3 | undefined }>();
+  const byMat = new Map<string, { geos: THREE.BufferGeometry[]; c: string; m: Mat3 | undefined; tx?: string }>();
   for (const p of prims) {
-    const key = `${p.c}|${p.m ?? ''}`;
+    const tx = p.t === 'box' ? p.tx : undefined;
+    const key = `${p.c}|${p.m ?? ''}|${tx ?? ''}`;
     let e = byMat.get(key);
     if (!e) {
-      e = { geos: [], c: p.c, m: p.m };
+      e = { geos: [], c: p.c, m: p.m, tx };
       byMat.set(key, e);
     }
     const geo = primGeometry(p, s);
@@ -332,9 +396,21 @@ export function primsToGroup(prims: Prim3[], s: { w: number; d: number }): THREE
   for (const e of byMat.values()) {
     const merged = e.geos.length > 1 ? mergeGeometries(e.geos, false) : e.geos[0];
     if (!merged) continue;
-    const mesh = new THREE.Mesh(merged, partMaterial(e.c, e.m));
+    const mesh = new THREE.Mesh(merged, e.tx ? decorMaterial(e.tx, e.c) : partMaterial(e.c, e.m));
     mesh.castShadow = e.m !== 'glass';
     mesh.receiveShadow = true;
+    g.add(mesh);
+  }
+  return g;
+}
+
+/** То же, но по отдельному мешу на примитив (ключ детали — в userData.key): для выбора детали щелчком. */
+export function primsToMeshes(prims: Prim3[], s: { w: number; d: number }): THREE.Group {
+  const g = new THREE.Group();
+  for (const p of prims) {
+    const tx = p.t === 'box' ? p.tx : undefined;
+    const mesh = new THREE.Mesh(primGeometry(p, s), tx ? decorMaterial(tx, p.c) : partMaterial(p.c, p.m));
+    if (p.t === 'box' && p.key) mesh.userData.key = p.key;
     g.add(mesh);
   }
   return g;
@@ -345,13 +421,7 @@ export function cabinetPrims(project: Project, designId: string): { prims: Prim3
   const design = project.cabinets.find((c) => c.id === designId);
   if (!design) return null;
   const res = generateCabinet(design, project.cabinetCatalog);
-  const prims: Prim3[] = [];
-  for (const part of res.parts) {
-    if (!part.box) continue;
-    const board = project.cabinetCatalog.boards.find((b) => b.id === part.materialId);
-    const isFacade = part.role === 'facade' || part.role === 'drawerFront' || part.role === 'slidingDoor';
-    prims.push({ t: 'box', x: part.box.x, y: part.box.y, z: part.box.z, w: part.box.sx, d: part.box.sy, h: part.box.sz, c: isFacade && design.color ? design.color : (board?.color ?? '#cdb58a'), m: 'wood' });
-  }
+  const { prims } = cabinetPartPrims(res.parts, design, project.cabinetCatalog);
   return { prims, w: design.width, d: res.overallDepth };
 }
 
@@ -441,7 +511,7 @@ export function buildZoneObject(zone: Zone, baseY = 0): THREE.Group | null {
 export function buildRoof(project: Project): THREE.Group | null {
   const top = project.levels[project.levels.length - 1];
   if (!top || project.roof.type === 'none') return null;
-  const { outline } = detectRooms(top.walls);
+  const { outline } = detectRooms(geomOf(top).walls);
   const pts = outline.flat();
   if (pts.length < 3) return null;
   const bb = bbox(pts);
@@ -596,11 +666,12 @@ export function buildProjectGroup(project: Project): THREE.Group {
 /** Сплошные отрезки стен для коллизий прогулки: [a, b, полутолщина] в мм. */
 export function collisionSegments(level: Level): { a: Vec2; b: Vec2; h: number }[] {
   const out: { a: Vec2; b: Vec2; h: number }[] = [];
-  for (const w of level.walls) {
+  const gm = geomOf(level);
+  for (const w of gm.walls) {
     const L = wallLength(w);
     if (L < 1) continue;
     const dir = norm(sub(w.b, w.a));
-    const gaps = level.openings
+    const gaps = gm.openings
       .filter((o) => o.wallId === w.id && o.kind !== 'window')
       .map((o) => [o.pos - o.width / 2, o.pos + o.width / 2])
       .sort((p, q) => p[0] - q[0]);

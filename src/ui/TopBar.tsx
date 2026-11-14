@@ -6,7 +6,7 @@ import { projectFromFile } from '../store/persistence';
 import { useProject } from '../store/projectStore';
 import { useUi } from '../store/uiStore';
 import type { ViewMode } from '../store/uiStore';
-import { useIssues } from './SidePanels';
+import { IssueList, useIssues } from './SidePanels';
 
 export function TopBar() {
   const { t, lang } = useT();
@@ -15,7 +15,7 @@ export function TopBar() {
   const canRedo = useProject((s) => s.future.length > 0);
   const viewMode = useUi((s) => s.viewMode);
   const activeLevelId = useUi((s) => s.activeLevelId);
-  const [menu, setMenu] = useState<null | 'file' | 'export'>(null);
+  const [menu, setMenu] = useState<null | 'file' | 'export' | 'issues'>(null);
   const [busy, setBusy] = useState(false);
   const issues = useIssues();
   const warnCount = issues.filter((i) => i.severity !== 'info').length;
@@ -130,9 +130,24 @@ export function TopBar() {
           </div>
         )}
       </div>
-      <button className={warnCount ? 'warn' : ''} onClick={() => ui().setDialog('rules')} title={t('Довідник норм і перевірка', 'Справочник норм и проверка')}>
-        ⚠ {warnCount}
-      </button>
+      <div className="menu-wrap">
+        <button className={warnCount ? 'warn' : ''} onClick={() => setMenu(menu === 'issues' ? null : 'issues')} title={t('Список порушень норм', 'Список нарушений норм')} data-menu="issues">
+          ⚠ {warnCount}
+        </button>
+        {menu === 'issues' && (
+          <div className="dropdown right issues-pop" data-issues-pop>
+            <header>
+              <b>
+                {t('Порушення та зауваження', 'Нарушения и замечания')} · {issues.length}
+              </b>
+              <button className="link" onClick={() => (setMenu(null), ui().setDialog('rules'))} data-action="open-rules">
+                {t('Довідник норм…', 'Справочник норм…')}
+              </button>
+            </header>
+            <IssueList issues={issues} onJump={() => setMenu(null)} />
+          </div>
+        )}
+      </div>
       <div className="seg">
         <button className={lang === 'uk' ? 'active' : ''} onClick={() => ui().setLang('uk')}>
           УКР

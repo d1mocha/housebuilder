@@ -25,7 +25,7 @@ export function baseDesign(name: string, width: number, height: number, depth: n
     back: { mode: 'overlay', grooveDepth: 8, grooveInset: 16, overlayGap: 2 },
     columns: [col()],
     shelfFixing: 'fixed',
-    facade: { type: 'none', gap: 2, inset: false, slidingCount: 2, slidingOverlap: 26, slidingZone: 100, slidingHeightDeduct: 40, slidingInfill: false, handles: true },
+    facade: { type: 'none', gap: 2, inset: false, slidingCount: 2, slidingOverlap: 26, slidingZone: 100, slidingHeightDeduct: 40, slidingInfill: false, slidingProfile: 26, slidingInfillDeductW: 36, slidingInfillDeductH: 60, handles: true },
     joint: 'confirmat',
     extraParts: [],
     overrides: {},
@@ -45,8 +45,10 @@ export const BUILTIN_TEMPLATES: TemplateDef[] = [
     make: () => ({
       ...baseDesign('Шафа-купе', 2400, 2600, 600),
       plinth: 70,
-      columns: [col({ shelves: 5 }), col({ shelves: 1, rod: true }), col({ shelves: 2, drawers: 3, rod: true })],
-      facade: { type: 'sliding', gap: 2, inset: false, slidingCount: 3, slidingOverlap: 26, slidingZone: 100, slidingHeightDeduct: 40, slidingInfill: false, handles: false },
+      // полиці | штанга з антресоллю | штанга, полиці та дві шухляди
+      columns: [col({ shelves: 4 }), col({ shelves: 1, rod: true }), col({ shelves: 2, drawers: 2, drawerHeight: 180, rod: true })],
+      facadeMaterialId: 'ldsp10',
+      facade: { type: 'sliding', gap: 2, inset: false, slidingCount: 3, slidingOverlap: 26, slidingZone: 100, slidingHeightDeduct: 40, slidingInfill: true, slidingProfile: 26, slidingInfillDeductW: 36, slidingInfillDeductH: 60, handles: false },
     }),
   },
   {
@@ -138,6 +140,12 @@ export const BUILTIN_TEMPLATES: TemplateDef[] = [
 ];
 
 export const newColumn = col;
+
+/** Разумное число ящиков для фасада «ящики» по высоте фасадной зоны (фасад ≈ 200 мм, не выше 400). */
+export function autoDrawerCount(d: CabinetDesign): number {
+  const zone = d.height - d.legs - (d.bottomMode === 'overlay' ? 0 : d.plinth);
+  return Math.max(1, Math.min(10, Math.round(zone / 200)));
+}
 
 /** Копия изделия с новыми идентификаторами (создание из шаблона). */
 export function cloneDesign(d: CabinetDesign, name?: string): CabinetDesign {

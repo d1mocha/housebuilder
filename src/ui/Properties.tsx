@@ -1,7 +1,9 @@
 // Панель свойств выделенного объекта: точный ввод чисел для любой сущности.
 import { useMemo } from 'react';
 import { networkSummary, routeLengthWithDrops, sewerDrop } from '../calc/networks';
-import { isTiled, tileLayout, tileLayoutRect } from '../calc/tiles';
+import { DEFAULT_RESERVE } from '../calc/estimate';
+import { LINOLEUM_ROLL_W, linoleumCalc, packCalc, wallpaperCalc } from '../calc/materials';
+import { isTileType, isTiled, tileLayout, tileLayoutRect } from '../calc/tiles';
 import { underfloorCalc } from '../calc/underfloor';
 import { ROOM_TYPE_NAMES, WALL_MATERIALS } from '../catalog/finishes';
 import { itemDef, num, routeDef, zoneDef } from '../catalog/registry';
@@ -11,10 +13,12 @@ import { fmt, useT } from '../i18n';
 import { snapshotBaseline } from '../model/demo';
 import { createLevel } from '../model/defaults';
 import { add, dist, mul, norm, polygonArea, polylineLength, sub } from '../model/geometry';
-import { duplicateEntity, findEntity, getContainer, getLevel, removeEntity } from '../model/ops';
-import type { Dim, Finish, Item, Level, Opening, Params, ParamValue, Project, Room, Route, Sel, Wall, Zone } from '../model/types';
-import { clampOpeningPos, roomSurfaces, surfaceNetArea, wallLength } from '../model/walls';
+import { alignItems, distributeItems, duplicateEntity, findEntity, getContainer, getLevel, removeEntity } from '../model/ops';
+import type { AlignMode } from '../model/ops';
+import type { Dim, ElementStatus, Finish, Item, Level, Opening, Params, ParamValue, Project, Room, Route, Sel, Wall, Zone } from '../model/types';
+import { clampOpeningPos, roomSurfaces, surfaceNetArea, wallLen, wallLength } from '../model/walls';
 import { ruleValue } from '../rules';
+import { deleteSelection, duplicateSelection, rotateSelection } from '../store/actions';
 import { useProject } from '../store/projectStore';
 import { useUi } from '../store/uiStore';
 import { Check, Color, Info, Num, Section, Select, Text } from './fields';
@@ -45,6 +49,24 @@ function FinishSelect({ label, value, target, onChange, project }: { label: stri
   const { ls } = useT();
   const opts = project.finishes.filter((f) => f.target.includes(target) || f.id === value).map((f) => ({ value: f.id, label: ls(f.name) }));
   return <Select label={label} value={value} options={opts} onChange={onChange} />;
+}
+
+const STATUS_NAMES: Record<ElementStatus, [string, string]> = {
+  existing: ['Існуюче', 'Существующее'],
+  demolish: ['Демонтаж', 'Демонтаж'],
+  new: ['Нове', 'Новое'],
+};
+
+function StatusSelect({ value, onChange }: { value: ElementStatus; onChange: (v: ElementStatus) => void }) {
+  const { t } = useT();
+  return (
+    <Select
+      label={t('Статус', 'Статус')}
+      value={value}
+      options={(Object.keys(STATUS_NAMES) as ElementStatus[]).map((k) => ({ value: k, label: t(STATUS_NAMES[k][0], STATUS_NAMES[k][1]) }))}
+      onChange={(v) => onChange(v as ElementStatus)}
+    />
+  );
 }
 
 function Actions({ sel }: { sel: Sel }) {
@@ -91,7 +113,8 @@ function WallProps({ wall, sel, project }: { wall: Wall; sel: Sel; project: Proj
     <Section title={t('Стіна', 'Стена')}>
       <Num
         label={t('Довжина (по осі)', 'Длина (по оси)')}
-        value={wallLength(wall)}
+        value={wall.arc ? wallLen(wall) : wallLength(wall)}
+        disabled={!!wall.arc}
         min={50}
         unit="мм"
         digits={0}
@@ -114,6 +137,8 @@ function WallProps({ wall, sel, project }: { wall: Wall; sel: Sel; project: Proj
       />
       <Check label={t('Несуча', 'Несущая')} value={wall.loadBearing} onChange={(v) => mut((w) => (w.loadBearing = v))} />
       <Check label={t('Зовнішня', 'Наружная')} value={!!wall.exterior} onChange={(v) => mut((w) => (w.exterior = v))} />
+      <StatusSelect value={wall.status ?? 'new'} onChange={(v) => mut((w) => (w.status = v))} />
+      <Num label={t('Стріла дуги (0 — пряма)', 'Стрела дуги (0 — прямая)')} value={wall.arc ?? 0} min={-20000} max={20000} step={50} unit="мм" title={t('Додатне значення — вигин у бік L', 'Положительное значение — выгиб в сторону L')} onChange={(v) => mut((w) => (Math.abs(v) >= 1 ? (w.arc = v) : delete w.arc))} />
       <FinishSelect label={t('Оздоблення, бік L', 'Отделка, сторона L')} value={wall.finishL} target="wall" project={project} onChange={(v) => mut((w) => (w.finishL = v))} />
       <FinishSelect label={t('Оздоблення, бік R', 'Отделка, сторона R')} value={wall.finishR} target="wall" project={project} onChange={(v) => mut((w) => (w.finishR = v))} />
       <div className="grid2">
@@ -204,6 +229,69 @@ function TileInfo({ finish, result }: { finish: Finish; result: ReturnType<typeo
   );
 }
 
+/** Расчёт рулонных и упаковочных материалов помещения: обои, ламинат/паркет, линолеум. */
+function RoomMaterials({ room, level, project, surfaces }: { room: Room; level: Level; project: Project; surfaces: ReturnType<typeof roomSurfaces> }) {
+  const { t, ls } = useT();
+  const fin = (id: string | null | undefined) => project.finishes.find((f) => f.id === id);
+  const money = (v: number) => `${fmt(Math.round(v))} грн`;
+  const m = (mm: number) => fmt(mm / 1000);
+  const boxes: React.ReactNode[] = [];
+  const floor = fin(room.floorFinish);
+  const resFloor = project.reserves.flooring ?? DEFAULT_RESERVE.flooring;
+  if (floor && (floor.type === 'linoleum' || floor.type === 'carpet')) {
+    const rollW = floor.rollW ?? LINOLEUM_ROLL_W;
+    const c = linoleumCalc(room.polygon, rollW);
+    boxes.push(
+      <div className="calc-box" key="lino" data-calc="linoleum">
+        <b>{ls(floor.name)}</b>
+        <div>
+          {t('Рулон', 'Рулон')} {m(rollW)} м: {c.strips} {t('полотен по', 'полотен по')} {m(c.stripLen)} м = <b>{fmt(c.lengthM)} {t('м.п.', 'м.п.')}</b> ({fmt(c.buyM2)} м²), {t('стиків', 'стыков')}: {c.seams}
+        </div>
+        {!!floor.price && <div>{t('Вартість', 'Стоимость')}: <b>{money(c.buyM2 * floor.price)}</b></div>}
+      </div>,
+    );
+  } else if (floor && (floor.type === 'laminate' || floor.type === 'parquet') && (floor.packArea ?? 0) > 0) {
+    const c = packCalc(room.area, floor.packArea!, resFloor);
+    boxes.push(
+      <div className="calc-box" key="packs" data-calc="packs">
+        <b>{ls(floor.name)}</b>
+        <div>
+          {fmt(room.area)} м² + {resFloor}% = {fmt(c.areaM2)} м² → <b>{c.packs} {t('уп.', 'уп.')}</b> {t('по', 'по')} {fmt(floor.packArea!)} м² ({fmt(c.buyM2)} м²)
+        </div>
+        {!!floor.price && <div>{t('Вартість', 'Стоимость')}: <b>{money(c.buyM2 * floor.price)}</b></div>}
+      </div>,
+    );
+  }
+  const runs = new Map<string, number>();
+  for (const s of surfaces) {
+    const f = fin(s.finishId);
+    if (f?.type !== 'wallpaper') continue;
+    const doors = s.openings.filter((o) => o.sill <= 0 && o.height >= 1900).reduce((a, o) => a + (o.to - o.from), 0);
+    runs.set(f.id, (runs.get(f.id) ?? 0) + Math.max(0, s.length - doors));
+  }
+  for (const [id, run] of runs) {
+    const f = fin(id)!;
+    const c = wallpaperCalc([run], level.height, f);
+    boxes.push(
+      <div className="calc-box" key={`wp${id}`} data-calc="wallpaper">
+        <b>{ls(f.name)}</b>
+        <div>
+          {t('Полотен', 'Полотен')}: {c.strips} {t('по', 'по')} {m(c.stripLen)} м{f.rapport ? ` (${t('рапорт', 'раппорт')} ${f.rapport} мм)` : ''}; {t('з рулону', 'из рулона')} — {c.perRoll} → <b>{c.rolls} {t('рул.', 'рул.')}</b>
+        </div>
+        {c.tooShort && <div className="warn-text">{t('Рулон коротший за одне полотно', 'Рулон короче одного полотна')}</div>}
+        {!!f.price && <div>{t('Вартість', 'Стоимость')}: <b>{money(c.rolls * f.price)}</b></div>}
+      </div>,
+    );
+  }
+  if (!boxes.length) return null;
+  return (
+    <>
+      <h5>{t('Матеріали — розрахунок', 'Материалы — расчёт')}</h5>
+      {boxes}
+    </>
+  );
+}
+
 function RoomProps({ room, sel, project }: { room: Room; sel: Sel; project: Project }) {
   const { t, ls } = useT();
   const level = getLevel(project, sel.scope)!;
@@ -215,7 +303,7 @@ function RoomProps({ room, sel, project }: { room: Room; sel: Sel; project: Proj
   const floor = project.finishes.find((f) => f.id === room.floorFinish);
   const surfaces = useMemo(() => roomSurfaces(level, room), [level, room]);
   const wallArea = surfaces.reduce((s, x) => s + surfaceNetArea(x, level.height), 0) / 1e6;
-  const floorTiles = isTiled(floor) ? tileLayout(room.polygon, [], floor!.tileW!, floor!.tileH!, floor!.grout ?? 0, floor!.pattern, 10, floor!.packArea) : null;
+  const floorTiles = isTiled(floor) && isTileType(floor!.type) ? tileLayout(room.polygon, [], floor!.tileW!, floor!.tileH!, floor!.grout ?? 0, floor!.pattern, 10, floor!.packArea) : null;
   // плитка/панели на стенах — суммарно по типам отделки
   const wallTiles = useMemo(() => {
     const acc = new Map<string, ReturnType<typeof tileLayout>>();
@@ -276,6 +364,7 @@ function RoomProps({ room, sel, project }: { room: Room; sel: Sel; project: Proj
           });
         }}
       />
+      <RoomMaterials room={room} level={level} project={project} surfaces={surfaces} />
       {floorTiles && floor && (
         <>
           <h5>{t('Підлога — розкладка', 'Пол — раскладка')}</h5>
@@ -286,7 +375,7 @@ function RoomProps({ room, sel, project }: { room: Room; sel: Sel; project: Proj
       {wallTiles.map(({ f, r }) => (
         <TileInfo key={f.id} finish={f} result={r} />
       ))}
-      <button onClick={() => useUi.getState().setDialog('finishes')}>{t('Каталог оздоблення…', 'Каталог отделки…')}</button>
+      <button onClick={() => useUi.getState().setDialog('finishes')} data-action="materials">{t('Каталог оздоблення…', 'Каталог отделки…')}</button>
     </Section>
   );
 }
@@ -314,6 +403,7 @@ function ItemProps({ item, sel, project }: { item: Item; sel: Sel; project: Proj
         <Num label={t('Поворот', 'Поворот')} value={item.rot} step={15} digits={0} unit="°" onChange={(v) => mut((x) => (x.rot = ((v % 360) + 360) % 360))} />
         <Num label={t('Від підлоги', 'От пола')} value={item.z} step={50} digits={0} unit="мм" onChange={(v) => mut((x) => (x.z = v))} />
       </div>
+      {def && def.layer !== 'furniture' && def.layer !== 'landscape' && <StatusSelect value={item.status ?? 'new'} onChange={(v) => mut((x) => (x.status = v))} />}
       {def && item.kind !== 'cabinet' && <ParamsForm defs={def.params} params={item.params} project={project} onChange={(k, v) => mut((x) => (x.params[k] = v))} />}
       <Info label={t('Габарити Ш×Г×В', 'Габариты Ш×Г×В')} value={`${Math.round(s.w)}×${Math.round(s.d)}×${Math.round(s.h)} мм`} />
       {item.kind === 'ht-radiator' && <Info label={t('Теплова потужність', 'Тепловая мощность')} value={<b>{num(item.params, 'sections', 8) * num(item.params, 'sectionPower', 150)} Вт</b>} />}
@@ -482,13 +572,17 @@ function LevelProps({ level, project }: { level: Level; project: Project }) {
           <>
             <button
               onClick={() => {
-                upd((d) => void (d.baseline = snapshotBaseline(d)));
+                upd((d) => {
+                  // всё, что сейчас есть (кроме стен под демонтаж), — существующее состояние
+                  for (const l of d.levels) for (const w of l.walls) if (w.status !== 'demolish') w.status = 'existing';
+                  d.baseline = snapshotBaseline(d);
+                });
                 useUi.getState().notify(t('Поточні стіни зафіксовано як існуючий стан (техпаспорт)', 'Текущие стены зафиксированы как существующее состояние (техпаспорт)'));
               }}
             >
               {project.baseline ? t('Перезафіксувати існуючий стан', 'Перезафиксировать существующее состояние') : t('Зафіксувати існуючий стан (за техпаспортом)', 'Зафиксировать существующее состояние (по техпаспорту)')}
             </button>
-            <p className="hint">{t('Після фіксації застосунок попереджає про зміни несучих стін і перегородок, що потребують узаконення.', 'После фиксации приложение предупреждает об изменениях несущих стен и перегородок, требующих узаконивания.')}</p>
+            <p className="hint">{t('Усі поточні стіни стають «існуючими», нові стіни далі створюються зі статусом «нове» і потрапляють у кошторис. Після фіксації застосунок попереджає про зміни несучих стін і перегородок, що потребують узаконення.', 'Все текущие стены становятся «существующими», новые стены далее создаются со статусом «новое» и попадают в смету. После фиксации приложение предупреждает об изменениях несущих стен и перегородок, требующих узаконивания.')}</p>
           </>
         )}
       </Section>
@@ -597,12 +691,146 @@ function NetworkBrief({ project }: { project: Project }) {
   );
 }
 
+
+/** Общее значение поля у всех объектов группы (undefined — значения различаются). */
+function common<T, V>(list: T[], get: (x: T) => V): V | undefined {
+  const v = get(list[0]);
+  return list.every((x) => get(x) === v) ? v : undefined;
+}
+
+const TYPE_NAMES: Record<Sel['type'], [string, string]> = {
+  wall: ['стін', 'стен'],
+  opening: ['прорізів', 'проёмов'],
+  room: ['приміщень', 'помещений'],
+  item: ['об’єктів', 'объектов'],
+  route: ['трас', 'трасс'],
+  zone: ['зон', 'зон'],
+  dim: ['розмірів', 'размеров'],
+  site: ['ділянка', 'участок'],
+  underlay: ['підкладка', 'подложка'],
+};
+
+/** Свойства группы: общие поля однотипных объектов, выравнивание и распределение. */
+function GroupProps({ sels, project }: { sels: Sel[]; project: Project }) {
+  const { t, ls } = useT();
+  const mixed = t('різні', 'разные');
+  const lab = (name: string, v: unknown) => (v === undefined ? `${name} (${mixed})` : name);
+  const counts = new Map<Sel['type'], number>();
+  for (const s of sels) counts.set(s.type, (counts.get(s.type) ?? 0) + 1);
+  const ents = <T,>(type: Sel['type']) => sels.filter((s) => s.type === type).map((s) => findEntity(project, s) as T | undefined).filter((x): x is T => !!x);
+  const walls = ents<Wall>('wall');
+  const items = ents<Item>('item');
+  const openings = ents<Opening>('opening');
+  const only = (type: Sel['type']) => counts.size === 1 && counts.has(type);
+  const mutAll = <T,>(type: Sel['type'], fn: (x: T) => void) =>
+    upd((d) => {
+      for (const s of sels) {
+        if (s.type !== type) continue;
+        const x = findEntity(d, s) as T | undefined;
+        if (x) fn(x);
+      }
+    });
+  const kinds = new Set(items.map((i) => i.kind));
+  const def = kinds.size === 1 ? itemDef(items[0].kind) : undefined;
+  // общие параметры разнотипных объектов — по совпадающим ключу и типу поля
+  const defsAll = items.map((i) => itemDef(i.kind)?.params ?? []);
+  const sharedDefs = def ? def.params : (defsAll[0] ?? []).filter((d) => defsAll.every((list) => list.some((q) => q.key === d.key && q.type === d.type)));
+  const sharedParams: Params = {};
+  for (const d of sharedDefs) {
+    const v = common(items, (i) => i.params[d.key]);
+    if (v !== undefined) sharedParams[d.key] = v;
+    else if (items[0]) sharedParams[d.key] = items[0].params[d.key];
+  }
+  const engItems = items.length > 0 && items.every((i) => {
+    const l = itemDef(i.kind)?.layer;
+    return l && l !== 'furniture' && l !== 'landscape';
+  });
+  const align = (mode: AlignMode) => upd((d) => alignItems(d, sels, mode));
+  const ALIGN: [AlignMode, string, string, string][] = [
+    ['left', '⇤', 'По лівому краю', 'По левому краю'],
+    ['hcenter', '⇹', 'По центру (горизонтально)', 'По центру (горизонтально)'],
+    ['right', '⇥', 'По правому краю', 'По правому краю'],
+    ['top', '⤒', 'По верхньому краю', 'По верхнему краю'],
+    ['vcenter', '⇳', 'По центру (вертикально)', 'По центру (вертикально)'],
+    ['bottom', '⤓', 'По нижньому краю', 'По нижнему краю'],
+  ];
+  return (
+    <Section title={`${t('Виділено', 'Выделено')}: ${sels.length}`}>
+      <div data-group-props={sels.length}>
+        <p className="hint">{[...counts.entries()].map(([k, n]) => `${n} ${t(TYPE_NAMES[k][0], TYPE_NAMES[k][1])}`).join(', ')}</p>
+        {only('wall') && walls.length > 0 && (
+          <>
+            <Num label={lab(t('Товщина', 'Толщина'), common(walls, (w) => w.thickness))} value={walls[0].thickness} min={30} max={1000} step={10} unit="мм" onChange={(v) => mutAll<Wall>('wall', (w) => (w.thickness = v))} />
+            <Select
+              label={lab(t('Матеріал', 'Материал'), common(walls, (w) => w.material))}
+              value={common(walls, (w) => w.material) ?? ''}
+              options={[...(common(walls, (w) => w.material) === undefined ? [{ value: '', label: '—' }] : []), ...WALL_MATERIALS.map((m) => ({ value: m.id, label: ls(m.name) }))]}
+              onChange={(v) => v && mutAll<Wall>('wall', (w) => (w.material = v))}
+            />
+            <Check label={lab(t('Несуча', 'Несущая'), common(walls, (w) => w.loadBearing))} value={walls.every((w) => w.loadBearing)} onChange={(v) => mutAll<Wall>('wall', (w) => (w.loadBearing = v))} />
+            <Check label={lab(t('Зовнішня', 'Наружная'), common(walls, (w) => !!w.exterior))} value={walls.every((w) => !!w.exterior)} onChange={(v) => mutAll<Wall>('wall', (w) => (w.exterior = v))} />
+            <StatusSelect value={common(walls, (w) => w.status ?? 'new') ?? 'new'} onChange={(v) => mutAll<Wall>('wall', (w) => (w.status = v))} />
+            <Info label={t('Сумарна довжина', 'Суммарная длина')} value={`${fmt(walls.reduce((a, w) => a + wallLen(w), 0) / 1000)} м`} />
+          </>
+        )}
+        {only('opening') && openings.length > 0 && (
+          <>
+            <Num label={lab(t('Ширина', 'Ширина'), common(openings, (o) => o.width))} value={openings[0].width} min={300} max={6000} step={50} unit="мм" onChange={(v) => mutAll<Opening>('opening', (o) => (o.width = v))} />
+            <Num label={lab(t('Висота', 'Высота'), common(openings, (o) => o.height))} value={openings[0].height} min={300} max={4000} step={50} unit="мм" onChange={(v) => mutAll<Opening>('opening', (o) => (o.height = v))} />
+            <Num label={lab(t('Від підлоги', 'От пола'), common(openings, (o) => o.sill))} value={openings[0].sill} min={0} max={3000} step={50} unit="мм" onChange={(v) => mutAll<Opening>('opening', (o) => (o.sill = v))} />
+          </>
+        )}
+        {only('item') && items.length > 0 && (
+          <>
+            <Num label={lab(t('Поворот', 'Поворот'), common(items, (i) => i.rot))} value={items[0].rot} step={15} digits={0} unit="°" onChange={(v) => mutAll<Item>('item', (i) => (i.rot = ((v % 360) + 360) % 360))} />
+            <Num label={lab(t('Від підлоги', 'От пола'), common(items, (i) => i.z))} value={items[0].z} step={50} digits={0} unit="мм" onChange={(v) => mutAll<Item>('item', (i) => (i.z = v))} />
+            {engItems && <StatusSelect value={common(items, (i) => i.status ?? 'new') ?? 'new'} onChange={(v) => mutAll<Item>('item', (i) => (i.status = v))} />}
+            {sharedDefs.length > 0 && !kinds.has('cabinet') && <ParamsForm defs={sharedDefs} params={sharedParams} project={project} onChange={(k, v) => mutAll<Item>('item', (i) => (i.params[k] = v))} />}
+          </>
+        )}
+        {items.length >= 2 && (
+          <>
+            <div className="sub-title">{t('Вирівняти', 'Выровнять')}</div>
+            <div className="preset-row" data-align>
+              {ALIGN.map(([m, icon, uk, ru]) => (
+                <button key={m} className="chip" title={t(uk, ru)} data-align={m} onClick={() => align(m)}>
+                  {icon}
+                </button>
+              ))}
+            </div>
+            {items.length >= 3 && (
+              <div className="preset-row">
+                <button className="chip" data-distribute="x" onClick={() => upd((d) => distributeItems(d, sels, 'x'))}>
+                  ↔ {t('Розподілити по горизонталі', 'Распределить по горизонтали')}
+                </button>
+                <button className="chip" data-distribute="y" onClick={() => upd((d) => distributeItems(d, sels, 'y'))}>
+                  ↕ {t('Розподілити по вертикалі', 'Распределить по вертикали')}
+                </button>
+              </div>
+            )}
+          </>
+        )}
+        <div className="row actions">
+          {items.length > 0 && <button onClick={() => rotateSelection(90)}>⟳ 90°</button>}
+          <button onClick={duplicateSelection}>{t('Дублювати', 'Дублировать')}</button>
+          <button className="danger" onClick={deleteSelection}>
+            {t('Видалити', 'Удалить')}
+          </button>
+        </div>
+        <p className="hint">{t('Shift+клік — додати/прибрати об’єкт. Рамка зліва направо — лише повністю охоплені, справа наліво — усі зачеплені. Ctrl+A — усе в поточному режимі.', 'Shift+клик — добавить/убрать объект. Рамка слева направо — только целиком охваченные, справа налево — все задетые. Ctrl+A — всё в текущем режиме.')}</p>
+      </div>
+    </Section>
+  );
+}
+
 export function Properties() {
   const project = useProject((s) => s.project);
   const selection = useUi((s) => s.selection);
+  const multi = useUi((s) => s.multi);
   const activeLevelId = useUi((s) => s.activeLevelId);
   const level = project.levels.find((l) => l.id === activeLevelId) ?? project.levels[0];
   const ent = findEntity(project, selection);
+  if (multi.length > 1) return <GroupProps sels={multi} project={project} />;
   if (!selection || !ent) return <LevelProps level={level} project={project} />;
   switch (selection.type) {
     case 'wall':
