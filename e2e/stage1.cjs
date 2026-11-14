@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 (async () => {
-  const { browser, page, errors } = await launch();
+  const { browser, page, errors } = await launch(undefined, { hints: true });
   const out = path.join(__dirname, '..', 'e2e-out');
   fs.mkdirSync(out, { recursive: true });
   let s = await state(page);

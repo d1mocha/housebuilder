@@ -1,10 +1,12 @@
 // Общие помощники e2e-сценариев (Playwright, предустановленный Chromium).
 const { chromium } = require('playwright');
 
-async function launch(url = process.env.HB_URL || 'http://localhost:5173/housebuilder/') {
+/** hints: false (по умолчанию) — подсказки отключены, чтобы карточка внизу холста не перехватывала клики сценария. */
+async function launch(url = process.env.HB_URL || 'http://localhost:5173/housebuilder/', { hints = false } = {}) {
   const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
   const ctx = await browser.newContext({ viewport: { width: 1600, height: 900 }, acceptDownloads: true });
   const page = await ctx.newPage();
+  if (!hints) await page.addInitScript(() => { try { if (!localStorage.getItem('hb.ui')) localStorage.setItem('hb.ui', JSON.stringify({ hintsOff: true })); } catch { /* ignore */ } });
   const errors = [];
   page.on('console', (m) => m.type() === 'error' && errors.push('console: ' + m.text()));
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message + '\n' + (e.stack || '').split('\n').slice(0, 5).join('\n')));

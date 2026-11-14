@@ -96,6 +96,10 @@ interface UiState extends Persisted {
   show3dNetworks: boolean;
   /** Тени и расширенное освещение в 3D. */
   shadows3d: boolean;
+  /** Рулетка в 3D: щелчки по поверхностям задают точки замера. */
+  measure3d: boolean;
+  /** Результат последнего замера в 3D (текст для панели вида). */
+  measure3dText: string | null;
   wallDefaults: { thickness: number; material: string; loadBearing: boolean; exterior: boolean };
   setTool: (tool: ToolId, kind?: string | null, params?: Record<string, number | string | boolean>) => void;
   select: (sel: Sel | null) => void;
@@ -150,6 +154,8 @@ export const useUi = create<UiState>((set, get) => {
     showRoof: false,
     show3dNetworks: false,
     shadows3d: true,
+    measure3d: false,
+    measure3dText: null,
     wallDefaults: { thickness: 120, material: 'brick', loadBearing: false, exterior: false },
 
     setTool: (tool, kind = null, params = {}) => set({ tool, toolKind: kind, toolParams: params }),

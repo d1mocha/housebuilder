@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "preview": "vite preview",
-    "e2e": "node e2e/stage1.cjs && node e2e/stage2.cjs && node e2e/stage3.cjs && node e2e/stage456.cjs && node e2e/interactions.cjs && node e2e/block0.cjs && node e2e/block1.cjs && node e2e/block2.cjs"
+    "e2e": "node e2e/stage1.cjs && node e2e/stage2.cjs && node e2e/stage3.cjs && node e2e/stage456.cjs && node e2e/interactions.cjs && node e2e/block0.cjs && node e2e/block1.cjs && node e2e/block2.cjs && node e2e/block3.cjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",

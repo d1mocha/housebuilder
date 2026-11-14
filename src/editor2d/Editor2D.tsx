@@ -19,6 +19,7 @@ import { alignSnap } from './align';
 import { ContextMenu } from './ContextMenu';
 import type { MenuEntry } from './ContextMenu';
 import { snapItemToWalls } from './itemSnap';
+import { poseNewItem } from './place';
 import { Grid, ItemG, OpeningG, PX_PER_PAPER_MM, RouteG, WallsLayer, ZoneG, clampPos, contentBBox, layerOfItem, layerOfRoute, layerOfZone, ptsAttr, wallHitPolys } from './layers';
 import type { View } from './layers';
 import { SelOverlay, ToolPreview, emptyPreview } from './overlays';
@@ -308,28 +309,8 @@ export function Editor2D() {
     return [...out.filter((s) => s.type !== 'room'), ...out.filter((s) => s.type === 'room')];
   };
 
-  const itemGhost = (raw: Vec2, kind: string, params = ui().toolParams): Item => {
-    const def = itemDef(kind);
-    const scope = scopeOfKind(def);
-    const it = makeItem(kind, raw, pvRef.current.ghost?.rot ?? 0, level, params);
-    const s = itemSize(it);
-    const g = ui().snapGrid ? 50 : 1;
-    it.x = Math.round(raw.x / g) * g;
-    it.y = Math.round(raw.y / g) * g;
-    if (scope !== 'site' && (def?.mount === 'wall' || !def)) {
-      const sn = snapItemToWalls(raw, s.w, s.d, it.rot, geom.walls, 250);
-      if (sn.snapped) Object.assign(it, { x: sn.x, y: sn.y, rot: sn.rot });
-    } else if (scope !== 'site' && def && def.layer !== 'furniture' && def.mount !== 'ceiling') {
-      // инженерные точки липнут к грани стены
-      const hit = locateOnWall(level, raw, 200);
-      if (hit && hit.dist > 1) {
-        const u = norm(sub(raw, hit.point));
-        const c = add(hit.point, mul(u, hit.seg.thickness / 2));
-        Object.assign(it, { x: Math.round(c.x), y: Math.round(c.y), rot: wallFacingRot(hit.seg, raw) });
-      }
-    }
-    return it;
-  };
+  const itemGhost = (raw: Vec2, kind: string, params = ui().toolParams): Item =>
+    poseNewItem(level, kind, raw, params, { rot: pvRef.current.ghost?.rot ?? 0, grid: ui().snapGrid ? 50 : 1, site: scopeOfKind(itemDef(kind)) === 'site' });
 
   /** Проём под курсором (инструменты двери/окна/проёма), в т. ч. на дуговой стене. */
   const openingAt = (world: Vec2, kind: Opening['kind']): Opening | null => {

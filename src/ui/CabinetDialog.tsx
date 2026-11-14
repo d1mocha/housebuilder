@@ -1,8 +1,10 @@
 // Конструктор корпусной мебели: параметры изделия, 3D-превью, деталировка, раскрой, фурнитура, материалы.
 import { Invalidator } from '../view3d/Invalidator';
 import { OrbitControls } from '@react-three/drei';
-import { Canvas } from '@react-three/fiber';
-import { useEffect, useMemo, useState } from 'react';
+import { Canvas, useThree } from '@react-three/fiber';
+import type { ThreeEvent } from '@react-three/fiber';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import * as THREE from 'three';
 import { buildCutList, cutSize, edgeLabel, edgeTotals, materialTotals } from '../cabinet/cutlist';
 import type { CutRow } from '../cabinet/cutlist';
 import { generateCabinet } from '../cabinet/generate';
@@ -19,7 +21,8 @@ import type { Project } from '../model/types';
 import { deleteTemplate, listTemplates, saveTemplate } from '../store/persistence';
 import { useProject } from '../store/projectStore';
 import { useUi } from '../store/uiStore';
-import { cabinetPartPrims, primsToGroup } from '../view3d/build';
+import { cabinetPartPrims, primsToMeshes } from '../view3d/build';
+import { disposeSprite, textSprite } from '../view3d/label';
 import { Dialog } from './Dialog';
 import { Check, Num, NumInput, Section, Select, Text } from './fields';
 
@@ -51,11 +54,35 @@ export function syncCabinetItems(p: Project, d: CabinetDesign): void {
 /** Декоры плит: древесные текстуры библиотеки (волокна вдоль длины листа). */
 const DECOR_TEXTURES = TEXTURES.filter((x) => x.category === 'wood' || x.category === 'stone');
 
-function Preview({ parts, design, showFacades }: { parts: Part[]; design: CabinetDesign; showFacades: boolean }) {
+/** Размерная линия в 3D-предпросмотре: отрезок с засечками и подписью. */
+function Dim3({ a, b, label }: { a: [number, number, number]; b: [number, number, number]; label: string }) {
+  const geo = useMemo(() => {
+    const va = new THREE.Vector3(...a);
+    const vb = new THREE.Vector3(...b);
+    const dir = vb.clone().sub(va).normalize();
+    // засечки перпендикулярно линии
+    const side = Math.abs(dir.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+    const tick = side.multiplyScalar(0.035);
+    return new THREE.BufferGeometry().setFromPoints([va, vb, va.clone().add(tick), va.clone().sub(tick), vb.clone().add(tick), vb.clone().sub(tick)]);
+  }, [a, b]);
+  useEffect(() => () => geo.dispose(), [geo]);
+  const sprite = useMemo(() => textSprite(label), [label]);
+  useEffect(() => () => disposeSprite(sprite), [sprite]);
+  return (
+    <>
+      <lineSegments geometry={geo}>
+        <lineBasicMaterial color="#2563eb" />
+      </lineSegments>
+      <primitive object={sprite} position={[(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2]} />
+    </>
+  );
+}
+
+function Preview({ parts, design, showFacades, selKey, onSelect, showDims }: { parts: Part[]; design: CabinetDesign; showFacades: boolean; selKey: string | null; onSelect: (key: string | null) => void; showDims: boolean }) {
   const catalog = useProject((s) => s.project.cabinetCatalog);
-  const group = useMemo(() => {
+  const { group, depth } = useMemo(() => {
     const { prims, depth } = cabinetPartPrims(parts, design, catalog, { facades: showFacades });
-    return primsToGroup(prims, { w: design.width, d: depth });
+    return { group: primsToMeshes(prims, { w: design.width, d: depth }), depth };
   }, [parts, design, showFacades, catalog]);
   useEffect(
     () => () =>
@@ -65,19 +92,85 @@ function Preview({ parts, design, showFacades }: { parts: Part[]; design: Cabine
       }),
     [group],
   );
+  // контур выбранной детали
+  const outline = useMemo(() => {
+    const mesh = selKey ? (group.children.find((c) => c.userData.key === selKey) as THREE.Mesh | undefined) : undefined;
+    return mesh ? new THREE.EdgesGeometry(mesh.geometry) : null;
+  }, [group, selKey]);
+  useEffect(() => () => outline?.dispose(), [outline]);
   const size = Math.max(design.width, design.height) / 1000;
+  const W = design.width / 1000;
+  const H = design.height / 1000;
+  const D = depth / 1000;
+  const off = 0.12;
   return (
-    <Canvas camera={{ position: [size * 0.9, design.height / 1000 / 2 + size * 0.35, size * 1.6], fov: 40, near: 0.05, far: 100 }} frameloop="demand" dpr={[1, 1.75]} gl={{ preserveDrawingBuffer: true }}>
+    <Canvas camera={{ position: [size * 0.9, design.height / 1000 / 2 + size * 0.35, size * 1.6], fov: 40, near: 0.05, far: 100 }} frameloop="demand" dpr={[1, 1.75]} gl={{ preserveDrawingBuffer: true }} onPointerMissed={() => onSelect(null)}>
       <color attach="background" args={['#eef1f4']} />
       <ambientLight intensity={0.8} />
       <directionalLight position={[3, 5, 4]} intensity={1.1} />
       <directionalLight position={[-4, 3, -2]} intensity={0.4} />
-      <primitive object={group} />
+      <primitive
+        object={group}
+        onClick={(e: ThreeEvent<MouseEvent>) => {
+          if (e.delta > 4) return;
+          e.stopPropagation();
+          const key = e.object.userData.key as string | undefined;
+          if (key) onSelect(key);
+        }}
+      />
+      {outline && (
+        <lineSegments geometry={outline} renderOrder={5}>
+          <lineBasicMaterial color="#f97316" depthTest={false} />
+        </lineSegments>
+      )}
+      {showDims && (
+        <>
+          <Dim3 a={[-W / 2, 0, D / 2 + off]} b={[W / 2, 0, D / 2 + off]} label={String(Math.round(design.width))} />
+          <Dim3 a={[-W / 2 - off, 0, D / 2]} b={[-W / 2 - off, H, D / 2]} label={String(Math.round(design.height))} />
+          <Dim3 a={[W / 2 + off, 0, -D / 2]} b={[W / 2 + off, 0, D / 2]} label={String(Math.round(depth))} />
+        </>
+      )}
+      <PreviewProbe group={group} />
       <Invalidator />
       <gridHelper args={[8, 16, '#c5ccd6', '#dde2e8']} />
       <OrbitControls target={[0, design.height / 2000, 0]} makeDefault />
     </Canvas>
   );
+}
+
+/** Отладочный доступ для e2e: экранные координаты центров деталей в предпросмотре. */
+function PreviewProbe({ group }: { group: THREE.Group }) {
+  const camera = useThree((s) => s.camera);
+  const gl = useThree((s) => s.gl);
+  useEffect(() => {
+    const w = window as unknown as Record<string, unknown>;
+    w.__hbCabParts = () => {
+      const r = gl.domElement.getBoundingClientRect();
+      camera.updateMatrixWorld();
+      return group.children
+        .filter((c) => c.userData.key)
+        .map((c) => {
+          const box = new THREE.Box3().setFromObject(c);
+          const v = box.getCenter(new THREE.Vector3());
+          const size = box.getSize(new THREE.Vector3());
+          const p = v.clone().project(camera);
+          return { key: c.userData.key as string, x: r.left + ((p.x + 1) / 2) * r.width, y: r.top + ((1 - p.y) / 2) * r.height, cx: v.x, cy: v.y, cz: v.z, sx: size.x, sy: size.y, sz: size.z };
+        });
+    };
+    // подписи размерных линий, видимые в сцене
+    w.__hbCabDims = () => {
+      const out: string[] = [];
+      group.parent?.traverse((o) => {
+        if ((o as THREE.Sprite).isSprite && typeof o.userData.label === 'string') out.push(o.userData.label);
+      });
+      return out;
+    };
+    return () => {
+      delete w.__hbCabParts;
+      delete w.__hbCabDims;
+    };
+  }, [group, camera, gl]);
+  return null;
 }
 
 function shade(hex: string): string {
@@ -101,8 +194,12 @@ function EdgeSelect({ value, onChange, catalog }: { value: string | null; onChan
   );
 }
 
-function CutListTab({ design, rows, result, catalog }: { design: CabinetDesign; rows: CutRow[]; result: CabinetResult; catalog: CabinetCatalog }) {
+function CutListTab({ design, rows, result, catalog, selKey, onSelect }: { design: CabinetDesign; rows: CutRow[]; result: CabinetResult; catalog: CabinetCatalog; selKey: string | null; onSelect: (key: string | null) => void }) {
   const { t, ls } = useT();
+  const selRow = useRef<HTMLTableRowElement>(null);
+  useEffect(() => {
+    selRow.current?.scrollIntoView({ block: 'center' });
+  }, []);
   const board = (id: string) => catalog.boards.find((b) => b.id === id);
   const setEdge = (row: CutRow, side: keyof EdgeSides, v: string | null) =>
     updateDesign(design.id, (d) => {
@@ -174,8 +271,9 @@ function CutListTab({ design, rows, result, catalog }: { design: CabinetDesign; 
                 const m = d.extraParts.find((x) => x.id === manual?.id);
                 if (m) fn(m);
               });
+            const picked = !!selKey && r.partKeys.includes(selKey);
             return (
-              <tr key={r.key}>
+              <tr key={r.key} ref={picked ? selRow : undefined} className={picked ? 'row-sel' : ''} data-part-row={r.partKeys.join(' ')} data-part-sel={picked ? '1' : undefined} onClick={(e) => !(e.target as HTMLElement).closest('input,select,button') && onSelect(picked ? null : r.partKeys[0])}>
                 <td className="center">{i + 1}</td>
                 <td>{manual ? <input type="text" value={manual.name} onChange={(e) => mutManual((m) => (m.name = e.target.value))} /> : ls(r.name)}</td>
                 <td>
@@ -661,6 +759,8 @@ export function CabinetDialog() {
   const editId = useUi((s) => s.cabinetEditId);
   const [tab, setTab] = useState<'preview' | 'cut' | 'nest' | 'hw' | 'mat'>('preview');
   const [showFacades, setShowFacades] = useState(true);
+  const [showDims, setShowDims] = useState(true);
+  const [selKey, setSelKey] = useState<string | null>(null);
   const [userTemplates, setUserTemplates] = useState<CabinetDesign[]>([]);
   const design = project.cabinets.find((c) => c.id === editId) ?? null;
   const catalog = project.cabinetCatalog;
@@ -675,6 +775,7 @@ export function CabinetDialog() {
 
   const result = useMemo(() => (design ? generateCabinet(design, catalog) : null), [design, catalog]);
   const rows = useMemo(() => (result ? buildCutList(result.parts, catalog) : []), [result, catalog]);
+  const selPart = (selKey && result?.parts.find((p) => p.key === selKey)) || null;
   const nests = useMemo(() => (tab === 'nest' || tab === 'preview' ? nestCutList(rows, catalog) : []), [rows, catalog, tab]);
 
   const createFrom = (d: CabinetDesign) => {
@@ -809,9 +910,14 @@ export function CabinetDialog() {
                     </button>
                   ))}
                   {tab === 'preview' && (
-                    <label className="mini-check" style={{ marginLeft: 12, alignSelf: 'center' }}>
-                      <input type="checkbox" checked={showFacades} onChange={(e) => setShowFacades(e.target.checked)} /> {t('показувати фасади', 'показывать фасады')}
-                    </label>
+                    <>
+                      <label className="mini-check" style={{ marginLeft: 12, alignSelf: 'center' }}>
+                        <input type="checkbox" checked={showFacades} onChange={(e) => setShowFacades(e.target.checked)} /> {t('показувати фасади', 'показывать фасады')}
+                      </label>
+                      <label className="mini-check" style={{ alignSelf: 'center' }}>
+                        <input type="checkbox" checked={showDims} onChange={(e) => setShowDims(e.target.checked)} data-toggle="dims" /> {t('розміри', 'размеры')}
+                      </label>
+                    </>
                   )}
                 </div>
                 {result.warnings.length > 0 && (
@@ -824,10 +930,23 @@ export function CabinetDialog() {
                 <div className="cab-content">
                   {tab === 'preview' && (
                     <div className="cab-preview">
-                      <Preview parts={result.parts} design={design} showFacades={showFacades} />
+                      <Preview parts={result.parts} design={design} showFacades={showFacades} selKey={selKey} onSelect={setSelKey} showDims={showDims} />
+                      {selPart && (
+                        <div className="part-info" data-part-info={selPart.key}>
+                          <b>{ls(selPart.name)}</b> · {fmt(selPart.length, 1)} × {fmt(selPart.width, 1)} × {fmt(selPart.thickness, 1)} мм · {ls(catalog.boards.find((b) => b.id === selPart.materialId)?.name) || t('профіль', 'профиль')}
+                          {selPart.virtual ? (
+                            <span className="muted"> · {t('лише в 3D (у деталювання не входить)', 'только в 3D (в деталировку не входит)')}</span>
+                          ) : (
+                            <button className="link" data-action="to-cutlist" onClick={() => setTab('cut')}>
+                              {t('у деталюванні →', 'в деталировке →')}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      <p className="hint part-hint">{t('Клацніть деталь, щоб виділити її в деталюванні.', 'Щёлкните деталь, чтобы выделить её в деталировке.')}</p>
                     </div>
                   )}
-                  {tab === 'cut' && <CutListTab design={design} rows={rows} result={result} catalog={catalog} />}
+                  {tab === 'cut' && <CutListTab design={design} rows={rows} result={result} catalog={catalog} selKey={selKey} onSelect={setSelKey} />}
                   {tab === 'nest' && <NestingTab design={design} nests={nests} catalog={catalog} />}
                   {tab === 'hw' && <HardwareTab design={design} result={result} />}
                   {tab === 'mat' && <MaterialsTab catalog={catalog} />}

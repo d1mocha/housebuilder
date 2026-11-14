@@ -404,6 +404,18 @@ export function primsToGroup(prims: Prim3[], s: { w: number; d: number }): THREE
   return g;
 }
 
+/** То же, но по отдельному мешу на примитив (ключ детали — в userData.key): для выбора детали щелчком. */
+export function primsToMeshes(prims: Prim3[], s: { w: number; d: number }): THREE.Group {
+  const g = new THREE.Group();
+  for (const p of prims) {
+    const tx = p.t === 'box' ? p.tx : undefined;
+    const mesh = new THREE.Mesh(primGeometry(p, s), tx ? decorMaterial(tx, p.c) : partMaterial(p.c, p.m));
+    if (p.t === 'box' && p.key) mesh.userData.key = p.key;
+    g.add(mesh);
+  }
+  return g;
+}
+
 /** Примитивы изделия из конструктора (детали корпуса). */
 export function cabinetPrims(project: Project, designId: string): { prims: Prim3[]; w: number; d: number } | null {
   const design = project.cabinets.find((c) => c.id === designId);

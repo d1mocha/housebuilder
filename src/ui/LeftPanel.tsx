@@ -9,6 +9,7 @@ import type { CustomModel, LayerId } from '../model/types';
 import { useProject } from '../store/projectStore';
 import { useUi } from '../store/uiStore';
 import type { Mode, ToolId } from '../store/uiStore';
+import { CatalogSearch, ItemCard, KindCard, matches } from './Catalog';
 import { Check, Num, Section, Select } from './fields';
 
 const TOOLS: { id: ToolId; key: string; uk: string; ru: string; icon: string }[] = [
@@ -78,12 +79,30 @@ function BuildTab() {
   );
 }
 
-function KindButton({ active, label, onClick, color }: { active: boolean; label: string; onClick: () => void; color?: string }) {
+/** Раздел «Обране»: избранные объекты, трассы и зоны слоёв текущего режима. */
+function Favorites({ layers, q }: { layers: LayerId[]; q: string }) {
+  const { t, ls } = useT();
+  const favs = useUi((s) => s.favorites);
+  const tool = useUi((s) => s.tool);
+  const toolKind = useUi((s) => s.toolKind);
+  const items = allItemDefs().filter((d) => favs.includes(d.kind) && layers.includes(d.layer) && !d.hidden && matches(ls(d.name), q));
+  const routes = allRouteDefs().filter((d) => favs.includes(d.kind) && layers.includes(d.layer) && matches(ls(d.name), q));
+  const zones = allZoneDefs().filter((d) => favs.includes(d.kind) && layers.includes(d.layer) && matches(ls(d.name), q));
+  if (!items.length && !routes.length && !zones.length) return null;
   return (
-    <button className={`lib-item ${active ? 'active' : ''}`} onClick={onClick} title={label}>
-      {color && <i className="swatch" style={{ background: color }} />}
-      <span>{label}</span>
-    </button>
+    <Section title={`★ ${t('Обране', 'Избранное')} · ${items.length + routes.length + zones.length}`}>
+      <div className="lib-grid cards" data-favorites>
+        {items.map((d) => (
+          <ItemCard key={d.kind} def={d} label={ls(d.name)} favKey={d.kind} active={tool === 'item' && toolKind === d.kind} onPick={() => useUi.getState().setTool('item', d.kind)} />
+        ))}
+        {routes.map((d) => (
+          <KindCard key={d.kind} def={d} type="route" label={ls(d.name)} active={tool === 'route' && toolKind === d.kind} onPick={() => useUi.getState().setTool('route', d.kind)} />
+        ))}
+        {zones.map((d) => (
+          <KindCard key={d.kind} def={d} type="zone" label={ls(d.name)} active={tool === 'zone' && toolKind === d.kind} onPick={() => useUi.getState().setTool('zone', d.kind)} />
+        ))}
+      </div>
+    </Section>
   );
 }
 
@@ -99,7 +118,7 @@ function LibraryTab() {
     const defs = allItemDefs().filter((d) => d.layer === 'furniture' && !d.hidden);
     const map = new Map<string, ItemDef[]>();
     for (const d of defs) {
-      if (q && !ls(d.name).toLowerCase().includes(q.toLowerCase())) continue;
+      if (!matches(ls(d.name), q)) continue;
       map.set(d.group, [...(map.get(d.group) ?? []), d]);
     }
     return [...map.entries()];
@@ -128,63 +147,74 @@ function LibraryTab() {
     const k = Math.max(m.bbox.w, m.bbox.d, m.bbox.h) < 50 ? 1000 : 1;
     return { modelId: m.id, w: Math.round(m.bbox.w * k), d: Math.round(m.bbox.d * k), h: Math.round(m.bbox.h * k) };
   };
+  const cabParams = (c: (typeof cabinets)[number]) => ({ designId: c.id, w: c.width, d: c.depth, h: c.height });
+  const found = groups.reduce((s, [, defs]) => s + defs.length, 0);
   return (
     <>
+      <CatalogSearch value={q} onChange={setQ} />
+      <Favorites layers={['furniture']} q={q} />
       <Section title={t('Власні вироби та моделі', 'Свои изделия и модели')}>
         <button className="primary" onClick={() => useUi.getState().setDialog('cabinet', null)}>
           {t('Конструктор корпусних меблів…', 'Конструктор корпусной мебели…')}
         </button>
-        {cabinets.map((c) => (
-          <KindButton key={c.id} active={tool === 'item' && toolKind === 'cabinet' && toolParams.designId === c.id} label={`${c.name} ${c.width}×${c.height}×${c.depth}`} color="#cdb58a" onClick={() => useUi.getState().setTool('item', 'cabinet', { designId: c.id, w: c.width, d: c.depth, h: c.height })} />
-        ))}
+        <div className="lib-grid cards">
+          {cabinets
+            .filter((c) => matches(c.name, q))
+            .map((c) => (
+              <ItemCard key={c.id} def={undefined} cabinet={c} params={cabParams(c)} label={`${c.name} ${c.width}×${c.height}×${c.depth}`} active={tool === 'item' && toolKind === 'cabinet' && toolParams.designId === c.id} onPick={() => useUi.getState().setTool('item', 'cabinet', cabParams(c))} />
+            ))}
+        </div>
         <label className="file-btn">
           {t('Імпорт моделі glTF / GLB / OBJ…', 'Импорт модели glTF / GLB / OBJ…')}
           <input type="file" accept=".gltf,.glb,.obj" onChange={(e) => e.target.files?.[0] && importModel(e.target.files[0])} />
         </label>
         {models.map((m) => (
-          <KindButton key={m.id} active={tool === 'item' && toolKind === 'model' && toolParams.modelId === m.id} label={m.name} color="#94a3b8" onClick={() => useUi.getState().setTool('item', 'model', modelParams(m))} />
+          <button key={m.id} className={`lib-item ${tool === 'item' && toolKind === 'model' && toolParams.modelId === m.id ? 'active' : ''}`} onClick={() => useUi.getState().setTool('item', 'model', modelParams(m))} title={m.name}>
+            <i className="swatch" style={{ background: '#94a3b8' }} />
+            <span>{m.name}</span>
+          </button>
         ))}
       </Section>
-      <div className="search">
-        <input placeholder={t('Пошук у бібліотеці…', 'Поиск в библиотеке…')} value={q} onChange={(e) => setQ(e.target.value)} />
-      </div>
       {groups.map(([g, defs]) => (
         <Section key={g} title={`${ls(GROUP_NAMES[g])} · ${defs.length}`}>
-          <div className="lib-grid">
+          <div className="lib-grid cards">
             {defs.map((d) => (
-              <KindButton key={d.kind} active={tool === 'item' && toolKind === d.kind} label={ls(d.name)} color={String(d.defaults.color ?? '#cbd5e1')} onClick={() => useUi.getState().setTool('item', d.kind)} />
+              <ItemCard key={d.kind} def={d} label={ls(d.name)} favKey={d.kind} active={tool === 'item' && toolKind === d.kind} onPick={() => useUi.getState().setTool('item', d.kind)} />
             ))}
           </div>
         </Section>
       ))}
+      {q && found === 0 && <p className="hint pad">{t('Нічого не знайдено', 'Ничего не найдено')}</p>}
+      <p className="hint pad">{t('Клік по картці — інструмент встановлення; картку можна перетягнути просто на план або в 3D-вікно. ☆ — додати в обране.', 'Клик по карточке — инструмент постановки; карточку можно перетащить прямо на план или в 3D-окно. ☆ — добавить в избранное.')}</p>
     </>
   );
 }
 
-function KindsSection({ layer, title, extra }: { layer: LayerId; title: string; extra?: React.ReactNode }) {
+function KindsSection({ layer, title, extra, q }: { layer: LayerId; title: string; extra?: React.ReactNode; q: string }) {
   const { t, ls } = useT();
   const tool = useUi((s) => s.tool);
   const toolKind = useUi((s) => s.toolKind);
-  const items: ItemDef[] = allItemDefs().filter((d) => d.layer === layer && !d.hidden);
-  const routes: RouteDef[] = allRouteDefs().filter((d) => d.layer === layer);
-  const zones: ZoneDef[] = allZoneDefs().filter((d) => d.layer === layer);
+  const items: ItemDef[] = allItemDefs().filter((d) => d.layer === layer && !d.hidden && matches(ls(d.name), q));
+  const routes: RouteDef[] = allRouteDefs().filter((d) => d.layer === layer && matches(ls(d.name), q));
+  const zones: ZoneDef[] = allZoneDefs().filter((d) => d.layer === layer && matches(ls(d.name), q));
   const pick = (tl: ToolId, kind: string) => {
     const ui = useUi.getState();
     if (!ui.layers[layer].visible) ui.toggleLayer(layer, 'visible');
     ui.setTool(tl, kind);
   };
+  if (q && !items.length && !routes.length && !zones.length) return null;
   return (
     <Section title={title}>
       {extra}
-      <div className="lib-grid">
+      <div className="lib-grid cards">
         {items.map((d) => (
-          <KindButton key={d.kind} active={tool === 'item' && toolKind === d.kind} label={ls(d.name)} onClick={() => pick('item', d.kind)} />
+          <ItemCard key={d.kind} def={d} label={ls(d.name)} favKey={d.kind} active={tool === 'item' && toolKind === d.kind} onPick={() => pick('item', d.kind)} />
         ))}
         {routes.map((d) => (
-          <KindButton key={d.kind} active={tool === 'route' && toolKind === d.kind} label={`〰 ${ls(d.name)}`} color={typeof d.color === 'string' ? d.color : d.color(d.defaults)} onClick={() => pick('route', d.kind)} />
+          <KindCard key={d.kind} def={d} type="route" label={ls(d.name)} active={tool === 'route' && toolKind === d.kind} onPick={() => pick('route', d.kind)} />
         ))}
         {zones.map((d) => (
-          <KindButton key={d.kind} active={tool === 'zone' && toolKind === d.kind} label={`▱ ${ls(d.name)}`} color={d.color} onClick={() => pick('zone', d.kind)} />
+          <KindCard key={d.kind} def={d} type="zone" label={ls(d.name)} active={tool === 'zone' && toolKind === d.kind} onPick={() => pick('zone', d.kind)} />
         ))}
       </div>
       {(routes.length > 0 || zones.length > 0) && <p className="hint">{t('Траси й зони: клацайте точки, Enter або подвійний клік — завершити, Backspace — прибрати точку.', 'Трассы и зоны: щёлкайте точки, Enter или двойной клик — завершить, Backspace — убрать точку.')}</p>}
@@ -194,55 +224,81 @@ function KindsSection({ layer, title, extra }: { layer: LayerId; title: string; 
 
 function ElectricalTab() {
   const { t } = useT();
-  return <KindsSection layer="electrical" title={t('Електрика', 'Электрика')} extra={<button onClick={() => useUi.getState().setDialog('groups')}>{t('Групи та автомати…', 'Группы и автоматы…')}</button>} />;
+  const [q, setQ] = useState('');
+  return (
+    <>
+      <CatalogSearch value={q} onChange={setQ} />
+      <Favorites layers={['electrical']} q={q} />
+      <KindsSection layer="electrical" q={q} title={t('Електрика', 'Электрика')} extra={<button onClick={() => useUi.getState().setDialog('groups')}>{t('Групи та автомати…', 'Группы и автоматы…')}</button>} />
+    </>
+  );
 }
 
 function WaterTab() {
   const { t } = useT();
-  return <KindsSection layer="plumbing" title={t('Водопровід і каналізація', 'Водопровод и канализация')} />;
+  const [q, setQ] = useState('');
+  return (
+    <>
+      <CatalogSearch value={q} onChange={setQ} />
+      <Favorites layers={['plumbing']} q={q} />
+      <KindsSection layer="plumbing" q={q} title={t('Водопровід і каналізація', 'Водопровод и канализация')} />
+    </>
+  );
 }
 
 function HeatingTab() {
   const { t } = useT();
+  const [q, setQ] = useState('');
   return (
     <>
-      <KindsSection layer="heating" title={t('Опалення', 'Отопление')} />
+      <CatalogSearch value={q} onChange={setQ} />
+      <Favorites layers={['heating', 'gas', 'ventilation']} q={q} />
+      <KindsSection layer="heating" q={q} title={t('Опалення', 'Отопление')} />
       <KindsSection
         layer="gas"
+        q={q}
         title={t('Газ', 'Газ')}
         extra={<div className="warn-box">{t('Лише відображення точок. Проєктування та підключення газу виконує тільки ліцензована організація (оператор ГРМ).', 'Только отображение точек. Проектирование и подключение газа выполняет только лицензированная организация (оператор ГРМ).')}</div>}
       />
-      <KindsSection layer="ventilation" title={t('Вентиляція', 'Вентиляция')} />
+      <KindsSection layer="ventilation" q={q} title={t('Вентиляція', 'Вентиляция')} />
     </>
   );
 }
 
 function SiteTab() {
   const { t, ls } = useT();
+  const [q, setQ] = useState('');
   const tool = useUi((s) => s.tool);
   const toolKind = useUi((s) => s.toolKind);
   const hasSite = useProject((s) => !!s.project.site);
   const byGroup = useMemo(() => {
-    const m = new Map<string, { tl: ToolId; kind: string; label: string; color?: string }[]>();
-    const push = (g: string, e: { tl: ToolId; kind: string; label: string; color?: string }) => m.set(g, [...(m.get(g) ?? []), e]);
-    for (const d of allItemDefs().filter((x) => x.layer === 'landscape')) push(d.group, { tl: 'item', kind: d.kind, label: ls(d.name) });
-    for (const d of allRouteDefs().filter((x) => x.layer === 'landscape')) push(d.group, { tl: 'route', kind: d.kind, label: `〰 ${ls(d.name)}`, color: typeof d.color === 'string' ? d.color : d.color(d.defaults) });
-    for (const d of allZoneDefs().filter((x) => x.layer === 'landscape')) push(d.group, { tl: 'zone', kind: d.kind, label: `▱ ${ls(d.name)}`, color: d.color });
+    type E = { tl: ToolId; kind: string; label: string; item?: ItemDef; route?: RouteDef; zone?: ZoneDef };
+    const m = new Map<string, E[]>();
+    const push = (g: string, e: E) => matches(e.label, q) && m.set(g, [...(m.get(g) ?? []), e]);
+    for (const d of allItemDefs().filter((x) => x.layer === 'landscape')) push(d.group, { tl: 'item', kind: d.kind, label: ls(d.name), item: d });
+    for (const d of allRouteDefs().filter((x) => x.layer === 'landscape')) push(d.group, { tl: 'route', kind: d.kind, label: ls(d.name), route: d });
+    for (const d of allZoneDefs().filter((x) => x.layer === 'landscape')) push(d.group, { tl: 'zone', kind: d.kind, label: ls(d.name), zone: d });
     return [...m.entries()];
-  }, [ls]);
+  }, [ls, q]);
   if (!hasSite) return <p className="hint pad">{t('Ділянка доступна для проєктів типу «Приватний будинок».', 'Участок доступен для проектов типа «Частный дом».')}</p>;
   return (
     <>
+      <CatalogSearch value={q} onChange={setQ} />
+      <Favorites layers={['landscape']} q={q} />
       <Section title={t('Ділянка', 'Участок')}>
         <button onClick={() => useUi.getState().select({ type: 'site', id: 'site', scope: 'site' })}>{t('Межі, рельєф, сторони світу…', 'Границы, рельеф, стороны света…')}</button>
         <p className="hint">{t('Виділіть ділянку, щоб перетягувати вершини межі та задати позначки рельєфу, північ і тінь від сонця.', 'Выделите участок, чтобы перетаскивать вершины границы и задать отметки рельефа, север и тень от солнца.')}</p>
       </Section>
       {byGroup.map(([g, list]) => (
         <Section key={g} title={ls(GROUP_NAMES[g])}>
-          <div className="lib-grid">
-            {list.map((e) => (
-              <KindButton key={e.kind} active={tool === e.tl && toolKind === e.kind} label={e.label} color={e.color} onClick={() => useUi.getState().setTool(e.tl, e.kind)} />
-            ))}
+          <div className="lib-grid cards">
+            {list.map((e) =>
+              e.item ? (
+                <ItemCard key={e.kind} def={e.item} label={e.label} favKey={e.kind} active={tool === e.tl && toolKind === e.kind} onPick={() => useUi.getState().setTool(e.tl, e.kind)} />
+              ) : (
+                <KindCard key={e.kind} def={(e.route ?? e.zone)!} type={e.route ? 'route' : 'zone'} label={e.label} active={tool === e.tl && toolKind === e.kind} onPick={() => useUi.getState().setTool(e.tl, e.kind)} />
+              ),
+            )}
           </div>
         </Section>
       ))}
