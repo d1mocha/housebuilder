@@ -5,6 +5,7 @@ import type { LayerId, LS } from '../model/types';
 import { DISCLAIMER } from '../rules';
 import { validateProject } from '../rules/validate';
 import type { Issue } from '../rules/validate';
+import { selectWithMode } from '../store/actions';
 import { useProject } from '../store/projectStore';
 import { LAYER_ORDER, useUi } from '../store/uiStore';
 import { Section } from './fields';
@@ -63,7 +64,7 @@ export function jumpToIssue(i: Issue): void {
   const ui = useUi.getState();
   if (i.levelId && i.levelId !== ui.activeLevelId) ui.setActiveLevel(i.levelId);
   if (ui.tool !== 'select') ui.setTool('select');
-  if (i.sel) ui.select(i.sel);
+  if (i.sel) selectWithMode(i.sel);
   if (i.point) ui.focusOn(i.point);
 }
 

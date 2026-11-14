@@ -128,6 +128,7 @@ const fs = require('fs');
   await page.waitForTimeout(300);
   await page.keyboard.press('Home');
   await page.waitForTimeout(200);
+  await page.click('.left-panel [data-tab="plan"]');
   await clickWorld(page, 3400, 6000); // перегородка кухня/прихожая
   s = await state(page);
   check('0.7 стена выделена', s.sel?.type === 'wall');

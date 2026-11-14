@@ -41,7 +41,7 @@ const path = require('path');
   await page.keyboard.press('Escape');
 
   // библиотека: количество объектов и параметры
-  await page.click('[data-tab="library"]');
+  await page.click('[data-tab="furniture"]');
   const libCount = await page.locator('.left-panel .lib-item').count();
   check('в библиотеке не меньше 40 объектов', libCount >= 40, String(libCount));
   await page.click('text=Шафа розпашна');

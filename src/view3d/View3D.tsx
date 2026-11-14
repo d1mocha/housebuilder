@@ -11,6 +11,7 @@ import { useT } from '../i18n';
 import { bbox, rectCorners } from '../model/geometry';
 import { getContainer } from '../model/ops';
 import type { Item, LayerId, Level, Project, Sel, Vec2 } from '../model/types';
+import { selectWithMode } from '../store/actions';
 import { useProject } from '../store/projectStore';
 import { useUi } from '../store/uiStore';
 import { buildFloors, buildItemObject, buildRoof, buildRouteObject, buildSiteGround, buildWalls, buildZoneObject, collisionSegments, terrainHeight } from './build';
@@ -53,7 +54,7 @@ const onPick = (e: ThreeEvent<MouseEvent>) => {
   const sel = selOf(e.object);
   if (sel) {
     e.stopPropagation();
-    useUi.getState().select(sel);
+    selectWithMode(sel);
   }
 };
 

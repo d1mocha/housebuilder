@@ -8,17 +8,19 @@ import { newId } from '../model/ids';
 import type { CustomModel, LayerId } from '../model/types';
 import { useProject } from '../store/projectStore';
 import { useUi } from '../store/uiStore';
-import type { ToolId } from '../store/uiStore';
+import type { Mode, ToolId } from '../store/uiStore';
 import { Check, Num, Section, Select } from './fields';
 
 const TOOLS: { id: ToolId; key: string; uk: string; ru: string; icon: string }[] = [
   { id: 'select', key: 'V', uk: 'Вибір', ru: 'Выбор', icon: '↖' },
   { id: 'wall', key: 'W', uk: 'Стіна', ru: 'Стена', icon: '▬' },
+  { id: 'arc', key: 'A', uk: 'Дуга', ru: 'Дуга', icon: '◠' },
   { id: 'room', key: 'R', uk: 'Кімната', ru: 'Комната', icon: '▭' },
   { id: 'door', key: 'D', uk: 'Двері', ru: 'Дверь', icon: '🚪' },
   { id: 'window', key: 'N', uk: 'Вікно', ru: 'Окно', icon: '▦' },
   { id: 'portal', key: 'O', uk: 'Проріз', ru: 'Проём', icon: '⊓' },
   { id: 'dim', key: 'M', uk: 'Розмір', ru: 'Размер', icon: '↔' },
+  { id: 'measure', key: 'T', uk: 'Рулетка', ru: 'Рулетка', icon: '📏' },
 ];
 
 function BuildTab() {
@@ -190,12 +192,20 @@ function KindsSection({ layer, title, extra }: { layer: LayerId; title: string; 
   );
 }
 
-function EngTab() {
+function ElectricalTab() {
+  const { t } = useT();
+  return <KindsSection layer="electrical" title={t('Електрика', 'Электрика')} extra={<button onClick={() => useUi.getState().setDialog('groups')}>{t('Групи та автомати…', 'Группы и автоматы…')}</button>} />;
+}
+
+function WaterTab() {
+  const { t } = useT();
+  return <KindsSection layer="plumbing" title={t('Водопровід і каналізація', 'Водопровод и канализация')} />;
+}
+
+function HeatingTab() {
   const { t } = useT();
   return (
     <>
-      <KindsSection layer="electrical" title={t('Електрика', 'Электрика')} extra={<button onClick={() => useUi.getState().setDialog('groups')}>{t('Групи та автомати…', 'Группы и автоматы…')}</button>} />
-      <KindsSection layer="plumbing" title={t('Водопровід і каналізація', 'Водопровод и канализация')} />
       <KindsSection layer="heating" title={t('Опалення', 'Отопление')} />
       <KindsSection
         layer="gas"
@@ -240,31 +250,39 @@ function SiteTab() {
   );
 }
 
+/** Режимы работы: в каждом видны и кликабельны только свои слои, остальные приглушены. */
+export const MODES: { id: Mode; uk: string; ru: string; icon: string; hintUk: string; hintRu: string }[] = [
+  { id: 'plan', uk: 'План', ru: 'План', icon: '▦', hintUk: 'Стіни, прорізи, приміщення, розміри', hintRu: 'Стены, проёмы, помещения, размеры' },
+  { id: 'furniture', uk: 'Меблі', ru: 'Мебель', icon: '🛋', hintUk: 'Меблі, техніка, сантехніка', hintRu: 'Мебель, техника, сантехника' },
+  { id: 'electrical', uk: 'Електрика', ru: 'Электрика', icon: '⚡', hintUk: 'Розетки, вимикачі, світло, кабелі', hintRu: 'Розетки, выключатели, свет, кабели' },
+  { id: 'water', uk: 'Вода', ru: 'Вода', icon: '💧', hintUk: 'Водопровід і каналізація', hintRu: 'Водопровод и канализация' },
+  { id: 'heating', uk: 'Опалення', ru: 'Отопление', icon: '♨', hintUk: 'Опалення, газ, вентиляція', hintRu: 'Отопление, газ, вентиляция' },
+  { id: 'site', uk: 'Ділянка', ru: 'Участок', icon: '🌳', hintUk: 'Ділянка, доріжки, насадження', hintRu: 'Участок, дорожки, насаждения' },
+];
+
 export function LeftPanel() {
   const { t } = useT();
-  const tab = useUi((s) => s.leftTab);
-  const setTab = useUi((s) => s.setLeftTab);
+  const mode = useUi((s) => s.mode);
+  const setMode = useUi((s) => s.setMode);
   const kind = useProject((s) => s.project.kind);
-  const tabs: [typeof tab, string][] = [
-    ['build', t('План', 'План')],
-    ['library', t('Меблі', 'Мебель')],
-    ['eng', t('Мережі', 'Сети')],
-  ];
-  if (kind === 'house') tabs.push(['site', t('Ділянка', 'Участок')]);
+  const modes = MODES.filter((m) => m.id !== 'site' || kind === 'house');
   return (
     <aside className="left-panel">
-      <nav className="tabs">
-        {tabs.map(([id, name]) => (
-          <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)} data-tab={id}>
-            {name}
+      <nav className="tabs mode-tabs" data-mode={mode}>
+        {modes.map((m) => (
+          <button key={m.id} className={mode === m.id ? 'active' : ''} onClick={() => setMode(m.id)} data-tab={m.id} title={t(m.hintUk, m.hintRu)}>
+            <span className="mode-icon">{m.icon}</span>
+            <span>{t(m.uk, m.ru)}</span>
           </button>
         ))}
       </nav>
       <div className="panel-scroll">
-        {tab === 'build' && <BuildTab />}
-        {tab === 'library' && <LibraryTab />}
-        {tab === 'eng' && <EngTab />}
-        {tab === 'site' && <SiteTab />}
+        {mode === 'plan' && <BuildTab />}
+        {mode === 'furniture' && <LibraryTab />}
+        {mode === 'electrical' && <ElectricalTab />}
+        {mode === 'water' && <WaterTab />}
+        {mode === 'heating' && <HeatingTab />}
+        {mode === 'site' && <SiteTab />}
       </div>
     </aside>
   );

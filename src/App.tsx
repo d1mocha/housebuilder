@@ -4,8 +4,7 @@ import { Editor2D } from './editor2d/Editor2D';
 import { exportProjectFile } from './export/exports';
 import { useT } from './i18n';
 import { createDemoProject } from './model/demo';
-import { duplicateEntity, getContainer, removeEntity } from './model/ops';
-import type { Sel } from './model/types';
+import { deleteSelection, duplicateSelection, nudgeSelection, rotateSelection, selectAllInMode } from './store/actions';
 import { loadProject, saveProject } from './store/persistence';
 import { useProject } from './store/projectStore';
 import { useUi } from './store/uiStore';
@@ -22,7 +21,9 @@ const CabinetDialog = lazy(() => import('./ui/CabinetDialog').then((m) => ({ def
 const EstimateDialog = lazy(() => import('./ui/EstimateDialog').then((m) => ({ default: m.EstimateDialog })));
 const DrawingsDialog = lazy(() => import('./ui/DrawingsDialog').then((m) => ({ default: m.DrawingsDialog })));
 
-const TOOL_KEYS: Record<string, ToolId> = { KeyV: 'select', KeyW: 'wall', KeyR: 'room', KeyD: 'door', KeyN: 'window', KeyO: 'portal', KeyM: 'dim' };
+const TOOL_KEYS: Record<string, ToolId> = { KeyV: 'select', KeyW: 'wall', KeyA: 'arc', KeyR: 'room', KeyD: 'door', KeyN: 'window', KeyO: 'portal', KeyM: 'dim', KeyT: 'measure' };
+/** Инструменты, не привязанные к режиму «План». */
+const ANY_MODE_TOOLS: ToolId[] = ['select', 'measure'];
 
 function useHotkeys() {
   useEffect(() => {
@@ -52,15 +53,16 @@ function useHotkeys() {
         exportProjectFile(store.project);
         return;
       }
-      const sel = ui.selection;
       if (mod && e.code === 'KeyD') {
         e.preventDefault();
-        if (sel) {
-          let ns: Sel | null = null;
-          store.update((d) => {
-            ns = duplicateEntity(d, sel);
-          });
-          if (ns) ui.select(ns);
+        duplicateSelection();
+        return;
+      }
+      if (mod && e.code === 'KeyA') {
+        e.preventDefault();
+        if (!ui.walk) {
+          if (ui.tool !== 'select') ui.setTool('select');
+          selectAllInMode();
         }
         return;
       }
@@ -71,7 +73,9 @@ function useHotkeys() {
       }
       // во время рисования стены цифры идут в поле длины — буквы инструментов не мешают
       if (TOOL_KEYS[e.code]) {
-        ui.setTool(TOOL_KEYS[e.code]);
+        const tl = TOOL_KEYS[e.code];
+        if (!ANY_MODE_TOOLS.includes(tl)) ui.setMode('plan');
+        ui.setTool(tl);
         if (ui.viewMode === '3d') ui.setViewMode('split');
         return;
       }
@@ -97,36 +101,20 @@ function useHotkeys() {
           return;
         case 'Delete':
         case 'Backspace':
-          if (sel && ui.tool === 'select' && sel.type !== 'room' && sel.type !== 'site') {
-            store.update((d) => removeEntity(d, sel));
-            ui.select(null);
-          }
+          if (ui.tool === 'select') deleteSelection();
           return;
         case 'KeyQ':
         case 'KeyE':
-          if (sel?.type === 'item') {
-            store.update((d) => {
-              const it = getContainer(d, sel.scope)?.items.find((i) => i.id === sel.id);
-              if (it) it.rot = (it.rot + (e.code === 'KeyE' ? 90 : 270)) % 360;
-            });
-          }
+          rotateSelection(e.code === 'KeyE' ? 90 : -90);
           return;
         case 'ArrowLeft':
         case 'ArrowRight':
         case 'ArrowUp':
         case 'ArrowDown':
-          if (sel?.type === 'item') {
+          if (ui.multi.length) {
             e.preventDefault();
             const step = e.shiftKey ? 10 : store.project.gridStep;
-            const dx = e.code === 'ArrowLeft' ? -step : e.code === 'ArrowRight' ? step : 0;
-            const dy = e.code === 'ArrowUp' ? -step : e.code === 'ArrowDown' ? step : 0;
-            store.update((d) => {
-              const it = getContainer(d, sel.scope)?.items.find((i) => i.id === sel.id);
-              if (it) {
-                it.x += dx;
-                it.y += dy;
-              }
-            });
+            nudgeSelection(e.code === 'ArrowLeft' ? -step : e.code === 'ArrowRight' ? step : 0, e.code === 'ArrowUp' ? -step : e.code === 'ArrowDown' ? step : 0);
           }
           return;
         default:
@@ -195,11 +183,8 @@ export default function App() {
   useHotkeys();
   const viewMode = useUi((s) => s.viewMode);
   const dialog = useUi((s) => s.dialog);
-  const [rightTab, setRightTab] = useState<'props' | 'layers' | 'issues'>('props');
-  const selection = useUi((s) => s.selection);
-  useEffect(() => {
-    if (selection) setRightTab('props');
-  }, [selection]);
+  const rightTab = useUi((s) => s.rightTab);
+  const setRightTab = (rightTab: 'props' | 'layers' | 'issues') => useUi.getState().set({ rightTab });
   if (!ready) return <div className="loading">HouseBuilder…</div>;
   return (
     <div className="app">

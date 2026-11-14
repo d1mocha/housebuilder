@@ -369,7 +369,7 @@ code {
 }
 .grid2 {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 10px;
 }
 .grid2 .field {
@@ -422,7 +422,7 @@ code {
 }
 .tool-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 5px;
 }
 .tool {
@@ -718,7 +718,7 @@ code {
 }
 .kind-cards {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   margin: 10px 0 14px;
 }
@@ -961,4 +961,32 @@ table.rules-table td.small {
 }
 table.rules-table .num {
   width: 100%;
+}
+
+/* ── режимы работы (левая панель) ── */
+.tabs.mode-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+.tabs.mode-tabs button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 2px 5px;
+  font-size: 12px;
+  border-bottom: 2px solid transparent;
+}
+.tabs.mode-tabs button .mode-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+.tabs.mode-tabs button.active {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+.sub-title {
+  margin: 8px 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted, #64748b);
 }

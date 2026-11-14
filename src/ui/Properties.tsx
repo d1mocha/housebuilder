@@ -11,10 +11,12 @@ import { fmt, useT } from '../i18n';
 import { snapshotBaseline } from '../model/demo';
 import { createLevel } from '../model/defaults';
 import { add, dist, mul, norm, polygonArea, polylineLength, sub } from '../model/geometry';
-import { duplicateEntity, findEntity, getContainer, getLevel, removeEntity } from '../model/ops';
+import { alignItems, distributeItems, duplicateEntity, findEntity, getContainer, getLevel, removeEntity } from '../model/ops';
+import type { AlignMode } from '../model/ops';
 import type { Dim, ElementStatus, Finish, Item, Level, Opening, Params, ParamValue, Project, Room, Route, Sel, Wall, Zone } from '../model/types';
 import { clampOpeningPos, roomSurfaces, surfaceNetArea, wallLen, wallLength } from '../model/walls';
 import { ruleValue } from '../rules';
+import { deleteSelection, duplicateSelection, rotateSelection } from '../store/actions';
 import { useProject } from '../store/projectStore';
 import { useUi } from '../store/uiStore';
 import { Check, Color, Info, Num, Section, Select, Text } from './fields';
@@ -623,12 +625,146 @@ function NetworkBrief({ project }: { project: Project }) {
   );
 }
 
+
+/** Общее значение поля у всех объектов группы (undefined — значения различаются). */
+function common<T, V>(list: T[], get: (x: T) => V): V | undefined {
+  const v = get(list[0]);
+  return list.every((x) => get(x) === v) ? v : undefined;
+}
+
+const TYPE_NAMES: Record<Sel['type'], [string, string]> = {
+  wall: ['стін', 'стен'],
+  opening: ['прорізів', 'проёмов'],
+  room: ['приміщень', 'помещений'],
+  item: ['об’єктів', 'объектов'],
+  route: ['трас', 'трасс'],
+  zone: ['зон', 'зон'],
+  dim: ['розмірів', 'размеров'],
+  site: ['ділянка', 'участок'],
+  underlay: ['підкладка', 'подложка'],
+};
+
+/** Свойства группы: общие поля однотипных объектов, выравнивание и распределение. */
+function GroupProps({ sels, project }: { sels: Sel[]; project: Project }) {
+  const { t, ls } = useT();
+  const mixed = t('різні', 'разные');
+  const lab = (name: string, v: unknown) => (v === undefined ? `${name} (${mixed})` : name);
+  const counts = new Map<Sel['type'], number>();
+  for (const s of sels) counts.set(s.type, (counts.get(s.type) ?? 0) + 1);
+  const ents = <T,>(type: Sel['type']) => sels.filter((s) => s.type === type).map((s) => findEntity(project, s) as T | undefined).filter((x): x is T => !!x);
+  const walls = ents<Wall>('wall');
+  const items = ents<Item>('item');
+  const openings = ents<Opening>('opening');
+  const only = (type: Sel['type']) => counts.size === 1 && counts.has(type);
+  const mutAll = <T,>(type: Sel['type'], fn: (x: T) => void) =>
+    upd((d) => {
+      for (const s of sels) {
+        if (s.type !== type) continue;
+        const x = findEntity(d, s) as T | undefined;
+        if (x) fn(x);
+      }
+    });
+  const kinds = new Set(items.map((i) => i.kind));
+  const def = kinds.size === 1 ? itemDef(items[0].kind) : undefined;
+  // общие параметры разнотипных объектов — по совпадающим ключу и типу поля
+  const defsAll = items.map((i) => itemDef(i.kind)?.params ?? []);
+  const sharedDefs = def ? def.params : (defsAll[0] ?? []).filter((d) => defsAll.every((list) => list.some((q) => q.key === d.key && q.type === d.type)));
+  const sharedParams: Params = {};
+  for (const d of sharedDefs) {
+    const v = common(items, (i) => i.params[d.key]);
+    if (v !== undefined) sharedParams[d.key] = v;
+    else if (items[0]) sharedParams[d.key] = items[0].params[d.key];
+  }
+  const engItems = items.length > 0 && items.every((i) => {
+    const l = itemDef(i.kind)?.layer;
+    return l && l !== 'furniture' && l !== 'landscape';
+  });
+  const align = (mode: AlignMode) => upd((d) => alignItems(d, sels, mode));
+  const ALIGN: [AlignMode, string, string, string][] = [
+    ['left', '⇤', 'По лівому краю', 'По левому краю'],
+    ['hcenter', '⇹', 'По центру (горизонтально)', 'По центру (горизонтально)'],
+    ['right', '⇥', 'По правому краю', 'По правому краю'],
+    ['top', '⤒', 'По верхньому краю', 'По верхнему краю'],
+    ['vcenter', '⇳', 'По центру (вертикально)', 'По центру (вертикально)'],
+    ['bottom', '⤓', 'По нижньому краю', 'По нижнему краю'],
+  ];
+  return (
+    <Section title={`${t('Виділено', 'Выделено')}: ${sels.length}`}>
+      <div data-group-props={sels.length}>
+        <p className="hint">{[...counts.entries()].map(([k, n]) => `${n} ${t(TYPE_NAMES[k][0], TYPE_NAMES[k][1])}`).join(', ')}</p>
+        {only('wall') && walls.length > 0 && (
+          <>
+            <Num label={lab(t('Товщина', 'Толщина'), common(walls, (w) => w.thickness))} value={walls[0].thickness} min={30} max={1000} step={10} unit="мм" onChange={(v) => mutAll<Wall>('wall', (w) => (w.thickness = v))} />
+            <Select
+              label={lab(t('Матеріал', 'Материал'), common(walls, (w) => w.material))}
+              value={common(walls, (w) => w.material) ?? ''}
+              options={[...(common(walls, (w) => w.material) === undefined ? [{ value: '', label: '—' }] : []), ...WALL_MATERIALS.map((m) => ({ value: m.id, label: ls(m.name) }))]}
+              onChange={(v) => v && mutAll<Wall>('wall', (w) => (w.material = v))}
+            />
+            <Check label={lab(t('Несуча', 'Несущая'), common(walls, (w) => w.loadBearing))} value={walls.every((w) => w.loadBearing)} onChange={(v) => mutAll<Wall>('wall', (w) => (w.loadBearing = v))} />
+            <Check label={lab(t('Зовнішня', 'Наружная'), common(walls, (w) => !!w.exterior))} value={walls.every((w) => !!w.exterior)} onChange={(v) => mutAll<Wall>('wall', (w) => (w.exterior = v))} />
+            <StatusSelect value={common(walls, (w) => w.status ?? 'new') ?? 'new'} onChange={(v) => mutAll<Wall>('wall', (w) => (w.status = v))} />
+            <Info label={t('Сумарна довжина', 'Суммарная длина')} value={`${fmt(walls.reduce((a, w) => a + wallLen(w), 0) / 1000)} м`} />
+          </>
+        )}
+        {only('opening') && openings.length > 0 && (
+          <>
+            <Num label={lab(t('Ширина', 'Ширина'), common(openings, (o) => o.width))} value={openings[0].width} min={300} max={6000} step={50} unit="мм" onChange={(v) => mutAll<Opening>('opening', (o) => (o.width = v))} />
+            <Num label={lab(t('Висота', 'Высота'), common(openings, (o) => o.height))} value={openings[0].height} min={300} max={4000} step={50} unit="мм" onChange={(v) => mutAll<Opening>('opening', (o) => (o.height = v))} />
+            <Num label={lab(t('Від підлоги', 'От пола'), common(openings, (o) => o.sill))} value={openings[0].sill} min={0} max={3000} step={50} unit="мм" onChange={(v) => mutAll<Opening>('opening', (o) => (o.sill = v))} />
+          </>
+        )}
+        {only('item') && items.length > 0 && (
+          <>
+            <Num label={lab(t('Поворот', 'Поворот'), common(items, (i) => i.rot))} value={items[0].rot} step={15} digits={0} unit="°" onChange={(v) => mutAll<Item>('item', (i) => (i.rot = ((v % 360) + 360) % 360))} />
+            <Num label={lab(t('Від підлоги', 'От пола'), common(items, (i) => i.z))} value={items[0].z} step={50} digits={0} unit="мм" onChange={(v) => mutAll<Item>('item', (i) => (i.z = v))} />
+            {engItems && <StatusSelect value={common(items, (i) => i.status ?? 'new') ?? 'new'} onChange={(v) => mutAll<Item>('item', (i) => (i.status = v))} />}
+            {sharedDefs.length > 0 && !kinds.has('cabinet') && <ParamsForm defs={sharedDefs} params={sharedParams} project={project} onChange={(k, v) => mutAll<Item>('item', (i) => (i.params[k] = v))} />}
+          </>
+        )}
+        {items.length >= 2 && (
+          <>
+            <div className="sub-title">{t('Вирівняти', 'Выровнять')}</div>
+            <div className="preset-row" data-align>
+              {ALIGN.map(([m, icon, uk, ru]) => (
+                <button key={m} className="chip" title={t(uk, ru)} data-align={m} onClick={() => align(m)}>
+                  {icon}
+                </button>
+              ))}
+            </div>
+            {items.length >= 3 && (
+              <div className="preset-row">
+                <button className="chip" data-distribute="x" onClick={() => upd((d) => distributeItems(d, sels, 'x'))}>
+                  ↔ {t('Розподілити по горизонталі', 'Распределить по горизонтали')}
+                </button>
+                <button className="chip" data-distribute="y" onClick={() => upd((d) => distributeItems(d, sels, 'y'))}>
+                  ↕ {t('Розподілити по вертикалі', 'Распределить по вертикали')}
+                </button>
+              </div>
+            )}
+          </>
+        )}
+        <div className="row actions">
+          {items.length > 0 && <button onClick={() => rotateSelection(90)}>⟳ 90°</button>}
+          <button onClick={duplicateSelection}>{t('Дублювати', 'Дублировать')}</button>
+          <button className="danger" onClick={deleteSelection}>
+            {t('Видалити', 'Удалить')}
+          </button>
+        </div>
+        <p className="hint">{t('Shift+клік — додати/прибрати об’єкт. Рамка зліва направо — лише повністю охоплені, справа наліво — усі зачеплені. Ctrl+A — усе в поточному режимі.', 'Shift+клик — добавить/убрать объект. Рамка слева направо — только целиком охваченные, справа налево — все задетые. Ctrl+A — всё в текущем режиме.')}</p>
+      </div>
+    </Section>
+  );
+}
+
 export function Properties() {
   const project = useProject((s) => s.project);
   const selection = useUi((s) => s.selection);
+  const multi = useUi((s) => s.multi);
   const activeLevelId = useUi((s) => s.activeLevelId);
   const level = project.levels.find((l) => l.id === activeLevelId) ?? project.levels[0];
   const ent = findEntity(project, selection);
+  if (multi.length > 1) return <GroupProps sels={multi} project={project} />;
   if (!selection || !ent) return <LevelProps level={level} project={project} />;
   switch (selection.type) {
     case 'wall':

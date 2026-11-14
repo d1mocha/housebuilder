@@ -21,7 +21,7 @@ export function openProject(p: Project) {
   const ui = useUi.getState();
   ui.setActiveLevel(useProject.getState().project.levels[0].id);
   ui.setLastProject(p.id);
-  ui.set({ selection: null, tool: 'select', dialog: null, leftTab: 'build' });
+  ui.set({ selection: null, multi: [], tool: 'select', toolKind: null, dialog: null, mode: 'plan' });
 }
 
 function NewProjectDialog({ onClose }: { onClose: () => void }) {

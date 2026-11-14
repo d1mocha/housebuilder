@@ -15,9 +15,11 @@ const { launch, clickWorld, dragWorld, toScreen, state, check } = require('./hel
   if (h) await h.click();
   const P = () => page.evaluate(() => window.__hb.useProject.getState().project.levels[0]);
   const sel = () => page.evaluate(() => window.__hb.useUi.getState().selection);
+  const mode = (m) => page.click(`.left-panel [data-tab="${m}"]`);
   const rightClick = async (x, y) => { const p = await toScreen(page, x, y); await page.mouse.click(p.x, p.y, { button: 'right' }); };
 
   // мебель: перетаскивание, поворот клавишами, сдвиг стрелками, дублирование, удаление
+  await mode('furniture');
   let l = await P();
   const sofa0 = l.items.find((i) => i.kind === 'sofa');
   await dragWorld(page, sofa0.x, sofa0.y, sofa0.x + 600, sofa0.y + 700);
@@ -47,6 +49,7 @@ const { launch, clickWorld, dragWorld, toScreen, state, check } = require('./hel
   check('ручка поворота вращает объект', l.items.find((i) => i.id === tbl.id).rot === 270, String(l.items.find((i) => i.id === tbl.id).rot));
 
   // проём: перетаскивание вдоль стены
+  await mode('plan');
   const win0 = l.openings.find((o) => o.kind === 'window' && o.width === 1800);
   await dragWorld(page, win0.pos, 0, win0.pos - 700, 20);
   l = await P();
@@ -83,6 +86,7 @@ const { launch, clickWorld, dragWorld, toScreen, state, check } = require('./hel
   check('undo возвращает узел (одна запись на жест)', l.walls.some((w) => w.b.x === 3400 && w.b.y === 6800));
 
   // трасса: выделение и вставка вершины двойным кликом (участок, где рядом нет других трасс)
+  await mode('water');
   const cable = l.routes.find((r) => r.kind === 'pl-sewer');
   const last = cable.points[cable.points.length - 1];
   const prev = cable.points[cable.points.length - 2];
@@ -100,6 +104,7 @@ const { launch, clickWorld, dragWorld, toScreen, state, check } = require('./hel
   check('вершина трассы перетаскивается за ручку', pts.some((q) => Math.abs(q.x - (mid.x + 300)) < 30 && Math.abs(q.y - mid.y) < 30), JSON.stringify(pts));
 
   // двойной клик по изделию из конструктора открывает конструктор
+  await mode('furniture');
   const cab = l.items.find((i) => i.kind === 'cabinet');
   const cp = await toScreen(page, cab.x, cab.y);
   await page.mouse.dblclick(cp.x, cp.y);
@@ -109,6 +114,7 @@ const { launch, clickWorld, dragWorld, toScreen, state, check } = require('./hel
   await page.click('.dialog.full footer >> text=Закрити');
 
   // помещение: переименование
+  await mode('plan');
   const hall = l.rooms.find((r) => r.type === 'hall');
   await clickWorld(page, hall.seed.x, hall.seed.y);
   const name = page.locator('.right-panel label.field', { hasText: 'Назва' }).locator('input');
