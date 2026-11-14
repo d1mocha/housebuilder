@@ -1,7 +1,7 @@
 // Проверки целостности модели: объекты вне помещений, мебель в стене, проёмы за пределами стены.
 import { itemDef } from '../catalog/registry';
 import { add, cross, dot, norm, pointInPolygon, projectT, rectCorners, rotate, sub } from './geometry';
-import type { Item, Level, Opening, Vec2, Wall } from './types';
+import type { Item, Level, Opening, Project, Sel, Vec2, Wall } from './types';
 import { arcInfo, geomOf, wallLen, wallPolygon } from './walls';
 
 /**
@@ -124,4 +124,25 @@ export function itemsFlushToWall(level: Level, wall: Pick<Wall, 'a' | 'b' | 'thi
     const onFace = Math.abs(Math.abs(side) - half) <= 45;
     return onFace || (!straddle && gap >= -80 && gap <= 40);
   });
+}
+
+/**
+ * Объекты, оказавшиеся вне контура помещений (на этажах) и вне границы участка — «потерянные» после правок
+ * стен или в проектах, сохранённых старыми версиями. Этажи без единого помещения не проверяются: там план
+ * ещё не замкнут, и «вне помещений» оказалось бы всё.
+ */
+export function orphanItems(p: Project): Sel[] {
+  const out: Sel[] = [];
+  for (const l of p.levels) {
+    if (!l.rooms.length) continue;
+    for (const it of itemsOutsideRooms(l)) {
+      // на участке мебель и приборы могут стоять снаружи здания (терраса, наружный блок) — если они внутри границы
+      if (p.site && p.site.boundary.length >= 3 && pointInPolygon({ x: it.x, y: it.y }, p.site.boundary)) continue;
+      out.push({ type: 'item', id: it.id, scope: l.id });
+    }
+  }
+  if (p.site && p.site.boundary.length >= 3) {
+    for (const it of p.site.items) if (!pointInPolygon({ x: it.x, y: it.y }, p.site.boundary)) out.push({ type: 'item', id: it.id, scope: 'site' });
+  }
+  return out;
 }

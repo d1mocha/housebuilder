@@ -1,10 +1,11 @@
 // Итерация 3: сдвиг стен (проёмы на месте, мебель едет со стеной, коллизии) и остальные пункты.
 import { describe, expect, it } from 'vitest';
 import '../src/catalog';
-import { convexOverlap, itemsFlushToWall, itemsInWalls, openingsOutOfWall } from '../src/model/checks';
-import { roomDefaults } from '../src/model/defaults';
+import { count, countNoun, plural } from '../src/i18n';
+import { convexOverlap, itemsFlushToWall, itemsInWalls, openingsOutOfWall, orphanItems } from '../src/model/checks';
+import { createProject, createWall, roomDefaults } from '../src/model/defaults';
 import { createDemoProject } from '../src/model/demo';
-import { keepOpenings, moveEntities, moveNode, translateWall, translateWalls } from '../src/model/ops';
+import { keepOpenings, makeItem, moveEntities, moveNode, removeEntity, translateWall, translateWalls } from '../src/model/ops';
 import type { Level, Opening, Sel } from '../src/model/types';
 import { syncRooms } from '../src/model/walls';
 import { validateProject } from '../src/rules/validate';
@@ -134,5 +135,81 @@ describe('1. сдвиг стен: мебель вплотную едет со с
     expect(convexOverlap(sq(0, 0, 100), sq(50, 50, 100))).toBe(true);
     expect(convexOverlap(sq(0, 0, 100), sq(100, 0, 100))).toBe(false); // касание — не пересечение
     expect(convexOverlap(sq(0, 0, 100), sq(150, 0, 100))).toBe(false);
+  });
+});
+
+describe('2. объекты вне контура помещений и участка', () => {
+  it('в демо таких объектов нет', () => {
+    expect(orphanItems(createDemoProject())).toEqual([]);
+  });
+  it('объекты, оставшиеся снаружи, находятся и убираются', () => {
+    const p = createDemoProject();
+    const l = p.levels[0];
+    const moved = l.items.slice(0, 3);
+    moved.forEach((it, i) => {
+      it.x = -4000 - i * 800;
+      it.y = 1000;
+    });
+    const found = orphanItems(p);
+    expect(found.map((s) => s.id).sort()).toEqual(moved.map((i) => i.id).sort());
+    expect(found.every((s) => s.type === 'item' && s.scope === l.id)).toBe(true);
+    const n0 = l.items.length;
+    for (const s of found) removeEntity(p, s);
+    expect(l.items.length).toBe(n0 - 3);
+    expect(orphanItems(p)).toEqual([]);
+  });
+  it('этаж без помещений не проверяется (план ещё не замкнут)', () => {
+    const p = createProject('apartment', 't');
+    const l = p.levels[0];
+    l.walls.push(createWall({ x: 0, y: 0 }, { x: 4000, y: 0 }, { thickness: 120 }));
+    l.items.push(makeItem('chair', { x: 9000, y: 9000 }, 0, l));
+    expect(orphanItems(p)).toEqual([]);
+  });
+  it('дом с участком: мебель на террасе внутри границы — не «потерянная», объект участка за границей — потерянный', () => {
+    const p = createProject('house', 't');
+    const l = p.levels[0];
+    const c = [
+      { x: 0, y: 0 },
+      { x: 6000, y: 0 },
+      { x: 6000, y: 5000 },
+      { x: 0, y: 5000 },
+    ];
+    for (let i = 0; i < 4; i++) l.walls.push(createWall(c[i], c[(i + 1) % 4], { thickness: 300 }));
+    syncRooms(l, roomDefaults());
+    expect(p.site).toBeTruthy();
+    const b = p.site!.boundary;
+    const inside = { x: (b[0].x + b[2].x) / 2, y: Math.max(...b.map((q) => q.y)) - 1500 };
+    const far = { x: Math.max(...b.map((q) => q.x)) + 5000, y: 0 };
+    const terrace = makeItem('chair', inside, 0, l);
+    const lost = makeItem('chair', far, 0, l);
+    l.items.push(terrace, lost);
+    const tree = makeItem('tree', far, 0, l);
+    p.site!.items.push(tree);
+    const ids = orphanItems(p).map((s) => `${s.scope === 'site' ? 'site' : 'lvl'}:${s.id}`);
+    expect(ids.sort()).toEqual([`lvl:${lost.id}`, `site:${tree.id}`].sort());
+  });
+});
+
+describe('7. склонения в счётчиках', () => {
+  const walls: [string, string, string] = ['стіна', 'стіни', 'стін'];
+  it('правило: 1 / 2–4 / 5–20, с учётом 11–14 и десятков', () => {
+    const forms = (ns: number[]) => ns.map((n) => plural(n, walls));
+    expect(forms([1, 21, 31, 101, 1001])).toEqual(Array(5).fill('стіна'));
+    expect(forms([2, 3, 4, 22, 23, 24, 102])).toEqual(Array(7).fill('стіни'));
+    expect(forms([0, 5, 6, 10, 11, 12, 13, 14, 15, 19, 20, 25, 100, 111, 112, 114])).toEqual(Array(16).fill('стін'));
+    expect(plural(1.5, ['метр', 'метра', 'метрів'])).toBe('метра');
+  });
+  it('счётчики на двух языках', () => {
+    expect(count(1, walls)).toBe('1 стіна');
+    expect(countNoun(2, 'wall', 'uk')).toBe('2 стіни');
+    expect(countNoun(5, 'wall', 'uk')).toBe('5 стін');
+    expect(countNoun(1, 'wall', 'ru')).toBe('1 стена');
+    expect(countNoun(3, 'wall', 'ru')).toBe('3 стены');
+    expect(countNoun(11, 'wall', 'ru')).toBe('11 стен');
+    expect(countNoun(1, 'item', 'uk')).toBe('1 об’єкт');
+    expect(countNoun(3, 'item', 'uk')).toBe('3 об’єкти');
+    expect(countNoun(28, 'part', 'uk')).toBe('28 деталей');
+    expect(countNoun(2, 'opening', 'ru')).toBe('2 проёма');
+    expect(countNoun(21, 'room', 'uk')).toBe('21 приміщення');
   });
 });

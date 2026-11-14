@@ -71,6 +71,33 @@ const fs = require('fs');
   await page.keyboard.press('Control+KeyZ');
   check('1 после undo коллизий нет', (await count('[data-collision]')) === 0 && (await count('[data-opening-out]')) === 0);
 
+  // ── 2. открытие сохранённого проекта: объекты вне помещений ──
+  check('2 в новом демо предложения убрать объекты нет', (await count('[data-orphans]')) === 0);
+  l0 = await L();
+  const lost = l0.items.filter((i) => i.kind === 'chair').slice(0, 3).map((i) => i.id);
+  await page.evaluate((ids) => window.__hb.useProject.getState().update((d) => { d.levels[0].items.filter((i) => ids.includes(i.id)).forEach((it, k) => { it.x = -3500 - k * 900; it.y = 1500; }); }), lost);
+  check('2 во время работы предложение не появляется (только при открытии проекта)', (await count('[data-orphans]')) === 0);
+  await page.waitForTimeout(1500); // автосохранение в IndexedDB
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector('.editor2d svg');
+  await page.waitForSelector('[data-orphans]', { timeout: 10000 });
+  const banner = await page.textContent('[data-orphans]');
+  check('2 при открытии проекта из IndexedDB найдены объекты вне помещений', (await page.getAttribute('[data-orphans]', 'data-orphans')) === '3' && /3 об’єкти/.test(banner), banner);
+  check('2 кнопка «Прибрати N об’єктів поза приміщеннями»', /Прибрати 3 об’єкти поза приміщеннями/.test(await page.textContent('[data-action="orphans-remove"]')));
+  await page.screenshot({ path: path.join(out, '52-orphans.png') });
+  await page.click('[data-action="orphans-show"]');
+  u = await ui();
+  check('2 «Показати» выделяет потерянные объекты', u.multi.length === 3 && u.multi.every((m) => lost.includes(m.id)));
+  await page.click('[data-action="orphans-remove"]');
+  l1 = await L();
+  check('2 объекты убраны одной операцией', l1.items.length === l0.items.length - 3 && !l1.items.some((i) => lost.includes(i.id)) && (await state(page)).past === 1);
+  check('2 предложение скрыто, показано сообщение с подсказкой про отмену', (await count('[data-orphans]')) === 0 && /Ctrl\+Z/.test(await page.textContent('.toast')));
+  await page.keyboard.press('Control+KeyZ');
+  l1 = await L();
+  check('2 undo возвращает убранные объекты', l1.items.length === l0.items.length && lost.every((id) => l1.items.some((i) => i.id === id)));
+  // вернуть стулья на место, чтобы следующие проверки шли на чистом демо
+  await openDemo();
+
   check('нет ошибок в консоли', errors.length === 0, errors.slice(0, 5).join(' | '));
   await browser.close();
 })().catch((e) => {

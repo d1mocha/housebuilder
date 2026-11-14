@@ -1,4 +1,5 @@
 // Верхняя панель: проект, история, вид, этажи, экспорт, язык.
+import { openProject } from './Dialogs';
 import { useState } from 'react';
 import { exportDxf, exportGltf, exportPdf, exportProjectFile } from '../export/exports';
 import { useT } from '../i18n';
@@ -39,9 +40,7 @@ export function TopBar() {
     file.text().then((text) => {
       try {
         const p = projectFromFile(text);
-        useProject.getState().setProject(p);
-        ui().setActiveLevel(p.levels[0].id);
-        ui().setLastProject(p.id);
+        openProject(p, { saved: true });
         ui().notify(t('Проєкт імпортовано', 'Проект импортирован'));
       } catch (e) {
         ui().notify(`${t('Не вдалося відкрити файл', 'Не удалось открыть файл')}: ${(e as Error).message}`);
