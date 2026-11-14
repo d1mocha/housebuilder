@@ -1,9 +1,10 @@
 // Операции над моделью. Функции мутируют переданный объект (вызываются внутри immer-черновика).
 import { itemDef, routeDef, zoneDef } from '../catalog/registry';
-import { add, closestOnSegment, dist, eq, projectT, sub } from './geometry';
+import { add, closestOnSegment, dist, dot, eq, mul, norm, projectT, sub } from './geometry';
 import { newId } from './ids';
 import type { Item, LayerId, Level, Project, Route, Sel, Site, Vec2, Wall, Zone } from './types';
-import { clampOpeningPos, wallLength } from './walls';
+import { itemsFlushToWall } from './checks';
+import { arcInfo, clampOpeningPos, wallLength } from './walls';
 import { createWall } from './defaults';
 
 export interface Container {
@@ -136,36 +137,52 @@ export function duplicateEntity(p: Project, sel: Sel, offset: Vec2 = { x: 300, y
 }
 
 /** Сдвинуть узел: все концы стен в точке from переезжают в to. */
-export function moveNode(level: Level, from: Vec2, to: Vec2): void {
+/**
+ * Выполнить правку стен так, чтобы проёмы стен, не входящих в moving, остались на своём абсолютном месте:
+ * когда у стены сдвигается начало (стена растягивается, укорачивается или поворачивается), положение проёма
+ * вдоль неё пересчитывается проекцией прежнего центра на новую ось. Проём может оказаться за пределами
+ * стены — это показывает проверка `openingsOutOfWall`.
+ */
+export function keepOpenings(level: Level, moving: Iterable<string>, fn: () => void): void {
+  const skip = new Set(moving);
+  const centers = new Map<string, Vec2>();
+  const before = new Map<string, { a: Vec2; b: Vec2 }>();
   for (const w of level.walls) {
-    if (eq(w.a, from, 1)) w.a = { x: to.x, y: to.y };
-    if (eq(w.b, from, 1)) w.b = { x: to.x, y: to.y };
+    if (skip.has(w.id) || arcInfo(w)) continue;
+    before.set(w.id, { a: { ...w.a }, b: { ...w.b } });
   }
+  for (const o of level.openings) {
+    const w0 = before.get(o.wallId);
+    if (!w0) continue;
+    centers.set(o.id, add(w0.a, mul(norm(sub(w0.b, w0.a)), o.pos)));
+  }
+  fn();
+  for (const o of level.openings) {
+    const c = centers.get(o.id);
+    const w0 = before.get(o.wallId);
+    const w = level.walls.find((x) => x.id === o.wallId);
+    if (!c || !w0 || !w) continue;
+    if (eq(w.a, w0.a, 0.01) && eq(w.b, w0.b, 0.01)) continue;
+    o.pos = Math.round(dot(sub(c, w.a), norm(sub(w.b, w.a))));
+  }
+}
+
+/** Переместить узел: все концы стен в точке from переезжают в to. Проёмы остаются на своих местах. */
+export function moveNode(level: Level, from: Vec2, to: Vec2): void {
+  keepOpenings(level, [], () => {
+    for (const w of level.walls) {
+      if (eq(w.a, from, 1)) w.a = { x: to.x, y: to.y };
+      if (eq(w.b, from, 1)) w.b = { x: to.x, y: to.y };
+    }
+  });
 }
 
 /**
  * Сдвинуть стену на delta: её концы, концы примыкающих в узлах стен и концы стен,
- * упирающихся в её тело (Т-примыкания), двигаются вместе с ней.
+ * упирающихся в её тело (Т-примыкания), двигаются вместе с ней. См. translateWalls.
  */
 export function translateWall(level: Level, wallId: string, delta: Vec2): void {
-  const wall = level.walls.find((w) => w.id === wallId);
-  if (!wall) return;
-  const a0 = { ...wall.a };
-  const b0 = { ...wall.b };
-  for (const w of level.walls) {
-    if (w.id === wallId) continue;
-    for (const key of ['a', 'b'] as const) {
-      const p = w[key];
-      if (eq(p, a0, 1) || eq(p, b0, 1)) {
-        w[key] = add(p, delta);
-      } else {
-        const c = closestOnSegment(p, a0, b0);
-        if (c.dist < 1 && c.t > 0 && c.t < 1) w[key] = add(p, delta);
-      }
-    }
-  }
-  wall.a = add(a0, delta);
-  wall.b = add(b0, delta);
+  translateWalls(level, [wallId], delta);
 }
 
 /** Разделить стену в точке (проекция на ось). Проёмы распределяются по половинам. */
@@ -275,27 +292,38 @@ export function layerOfSel(p: Project, sel: Sel): LayerId {
 /**
  * Сдвинуть несколько стен: их концы двигаются вместе, а концы невыделенных стен, примыкающие к ним
  * (в узлах и к телу), тянутся следом.
+ * — Проёмы сдвигаемых стен едут со стеной; проёмы невыделенных (растянутых) стен остаются на месте.
+ * — Объекты, стоящие вплотную к сдвигаемой стене (мебель, настенные приборы), двигаются вместе с ней;
+ *   объекты из carried не трогаются (они уже едут в составе выделения).
  */
-export function translateWalls(level: Level, ids: string[], delta: Vec2): void {
+export function translateWalls(level: Level, ids: string[], delta: Vec2, skipItems: Set<string> = new Set()): void {
   const set = new Set(ids);
   const moving = level.walls.filter((w) => set.has(w.id));
-  if (!moving.length) return;
+  if (!moving.length || (delta.x === 0 && delta.y === 0)) return;
   const orig = moving.map((w) => ({ a: { ...w.a }, b: { ...w.b } }));
-  for (const w of level.walls) {
-    if (set.has(w.id)) continue;
-    for (const key of ['a', 'b'] as const) {
-      const pt = w[key];
-      const attached = orig.some((o) => {
-        if (eq(pt, o.a, 1) || eq(pt, o.b, 1)) return true;
-        const c = closestOnSegment(pt, o.a, o.b);
-        return c.dist < 1 && c.t > 0 && c.t < 1;
-      });
-      if (attached) w[key] = add(pt, delta);
+  const carried = new Set<Item>();
+  for (const w of moving) for (const it of itemsFlushToWall(level, w)) if (!skipItems.has(it.id)) carried.add(it);
+  keepOpenings(level, set, () => {
+    for (const w of level.walls) {
+      if (set.has(w.id)) continue;
+      for (const key of ['a', 'b'] as const) {
+        const pt = w[key];
+        const attached = orig.some((o) => {
+          if (eq(pt, o.a, 1) || eq(pt, o.b, 1)) return true;
+          const c = closestOnSegment(pt, o.a, o.b);
+          return c.dist < 1 && c.t > 0 && c.t < 1;
+        });
+        if (attached) w[key] = add(pt, delta);
+      }
     }
-  }
-  for (const w of moving) {
-    w.a = add(w.a, delta);
-    w.b = add(w.b, delta);
+    for (const w of moving) {
+      w.a = add(w.a, delta);
+      w.b = add(w.b, delta);
+    }
+  });
+  for (const it of carried) {
+    it.x += delta.x;
+    it.y += delta.y;
   }
 }
 
@@ -339,9 +367,11 @@ export function moveEntities(p: Project, sels: Sel[], delta: Vec2): void {
         break;
     }
   }
+  // объекты, уже сдвинутые в составе выделения, стена не тащит второй раз
+  const movedItems = new Set(sels.filter((x) => x.type === 'item').map((x) => x.id));
   for (const [scope, ids] of wallsByLevel) {
     const lvl = getLevel(p, scope);
-    if (lvl) translateWalls(lvl, ids, delta);
+    if (lvl) translateWalls(lvl, ids, delta, movedItems);
   }
 }
 

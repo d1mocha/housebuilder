@@ -5,10 +5,11 @@ import { itemDef, routeDef, zoneDef } from '../catalog/registry';
 import { Prims } from '../draw2d/Svg';
 import { autoDimPrims, demolishedPrims, dimEntityPrims, itemSize, northArrowPrims, roomLabelPrims, sitePrims } from '../draw2d/plan';
 import { useT } from '../i18n';
+import { itemFootprintSize, itemsInWalls, openingsOutOfWall } from '../model/checks';
 import { createOpening, createWall, defaultWallStatus } from '../model/defaults';
-import { add, angleDeg, closestOnSegment, dist, dot, eq, mid, mul, norm, perp, pointInPolygon, sub } from '../model/geometry';
+import { add, angleDeg, closestOnSegment, dist, dot, eq, mid, mul, norm, perp, pointInPolygon, rectCorners, sub } from '../model/geometry';
 import { newId } from '../model/ids';
-import { flipWall, getContainer, getLevel, itemBox, makeItem, moveEntities, moveNode, sameSel, selsInRect, splitWall, translateWall } from '../model/ops';
+import { flipWall, getContainer, getLevel, itemBox, keepOpenings, moveEntities, moveNode, sameSel, selsInRect, splitWall, translateWall } from '../model/ops';
 import { segRelations } from '../model/relations';
 import type { Item, LayerId, Level, Opening, Route, Sel, Vec2, Wall, Zone } from '../model/types';
 import { baseWallId, geomOf, locateOnWall, openingGeom, wallDir, wallFacingRot, wallLen } from '../model/walls';
@@ -52,6 +53,9 @@ export function Editor2D() {
   const geom = useMemo(() => geomOf(level), [level.walls, level.openings]); // eslint-disable-line react-hooks/exhaustive-deps
   const belowGeom = useMemo(() => (below ? geomOf(below) : null), [below?.walls, below?.openings]); // eslint-disable-line react-hooks/exhaustive-deps
   const hitPolys = useMemo(() => wallHitPolys(level), [level.walls, level.openings]); // eslint-disable-line react-hooks/exhaustive-deps
+  // коллизии: мебель в стене и проёмы за пределами стены — подсвечиваются постоянно, в т. ч. во время перетаскивания
+  const collisions = useMemo(() => itemsInWalls(level), [level.items, level.walls]); // eslint-disable-line react-hooks/exhaustive-deps
+  const badOpenings = useMemo(() => openingsOutOfWall(level), [level.openings, level.walls]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const svgRef = useRef<SVGSVGElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -685,8 +689,10 @@ export function Editor2D() {
         const l = getLevel(dr, sel.scope);
         if (!l) return;
         if (e.altKey) {
-          const w = l.walls.find((x) => x.id === sel.id);
-          if (w) w[dg.h === 'wa' ? 'a' : 'b'] = to;
+          keepOpenings(l, [], () => {
+            const w = l.walls.find((x) => x.id === sel.id);
+            if (w) w[dg.h === 'wa' ? 'a' : 'b'] = to;
+          });
         } else moveNode(l, orig, to);
       });
     } else if (dg.h === 'wm') {
@@ -757,8 +763,20 @@ export function Editor2D() {
       return;
     }
     if (dg.moved) {
+      const base = store().txBase;
       store().commit();
       lastClick.current = null;
+      // предупреждение, если правка стен загнала мебель в стену или вывела проём за пределы стены
+      const before = base ? getLevel(base, level.id) : undefined;
+      const after = getLevel(store().project, level.id);
+      if (before && after && before.walls !== after.walls) {
+        const hitN = itemsInWalls(after).length - itemsInWalls(before).length;
+        const outN = openingsOutOfWall(after).length - openingsOutOfWall(before).length;
+        const msgs: string[] = [];
+        if (hitN > 0) msgs.push(t(`Меблі перетинаються зі стіною: ${hitN}`, `Мебель пересекается со стеной: ${hitN}`));
+        if (outN > 0) msgs.push(t(`Прорізи поза межами стіни: ${outN}`, `Проёмы за пределами стены: ${outN}`));
+        if (msgs.length) ui().notify(`⚠ ${msgs.join('; ')} — ${t('див. список порушень', 'см. список нарушений')}`);
+      }
     } else {
       store().cancel();
       if (dg.kind === 'move') {
@@ -1096,6 +1114,20 @@ export function Editor2D() {
         {project.site && vis('landscape') && (
           <g style={{ pointerEvents: 'none' }}>
             <Prims prims={northArrowPrims(view.cx + size.w / 2 / view.zoom - 12 * k, view.cy - size.h / 2 / view.zoom + 14 * k, project.site.north, k)} k={k} />
+          </g>
+        )}
+        {(collisions.length > 0 || badOpenings.length > 0) && (
+          <g style={{ pointerEvents: 'none' }} data-collisions={collisions.length + badOpenings.length}>
+            {vis('furniture') &&
+              collisions.map(({ item }) => {
+                const s = itemFootprintSize(item);
+                return <polygon key={item.id} data-collision={item.id} points={ptsAttr(rectCorners({ x: item.x, y: item.y }, s.w, s.d, item.rot))} fill="#dc2626" fillOpacity={0.18} stroke="#dc2626" strokeWidth={2.2 / view.zoom} strokeDasharray={`${6 / view.zoom} ${3 / view.zoom}`} />;
+              })}
+            {vis('walls') &&
+              badOpenings.map((o) => {
+                const w = level.walls.find((x) => x.id === o.wallId);
+                return w ? <polygon key={o.id} data-opening-out={o.id} points={ptsAttr(openingGeom(o, w).quad)} fill="#dc2626" fillOpacity={0.25} stroke="#dc2626" strokeWidth={2.2 / view.zoom} /> : null;
+              })}
           </g>
         )}
         <g data-selection={multi.length}>
