@@ -9,7 +9,7 @@ import { ROOM_TYPE_NAMES, WALL_MATERIALS } from '../catalog/finishes';
 import { itemDef, num, routeDef, zoneDef } from '../catalog/registry';
 import type { ParamDef } from '../catalog/registry';
 import { itemSize } from '../draw2d/plan';
-import { fmt, useT } from '../i18n';
+import { countNoun, fmt, useT } from '../i18n';
 import { snapshotBaseline } from '../model/demo';
 import { createLevel } from '../model/defaults';
 import { add, dist, mul, norm, polygonArea, polylineLength, sub } from '../model/geometry';
@@ -21,6 +21,7 @@ import { ruleValue } from '../rules';
 import { deleteSelection, duplicateSelection, rotateSelection } from '../store/actions';
 import { useProject } from '../store/projectStore';
 import { useUi } from '../store/uiStore';
+import { selectionText } from './selectionText';
 import { Check, Color, Info, Num, Section, Select, Text } from './fields';
 
 const upd = (fn: (d: Project) => void) => useProject.getState().update(fn);
@@ -231,7 +232,7 @@ function TileInfo({ finish, result }: { finish: Finish; result: ReturnType<typeo
 
 /** Расчёт рулонных и упаковочных материалов помещения: обои, ламинат/паркет, линолеум. */
 function RoomMaterials({ room, level, project, surfaces }: { room: Room; level: Level; project: Project; surfaces: ReturnType<typeof roomSurfaces> }) {
-  const { t, ls } = useT();
+  const { t, ls, lang } = useT();
   const fin = (id: string | null | undefined) => project.finishes.find((f) => f.id === id);
   const money = (v: number) => `${fmt(Math.round(v))} грн`;
   const m = (mm: number) => fmt(mm / 1000);
@@ -245,7 +246,7 @@ function RoomMaterials({ room, level, project, surfaces }: { room: Room; level: 
       <div className="calc-box" key="lino" data-calc="linoleum">
         <b>{ls(floor.name)}</b>
         <div>
-          {t('Рулон', 'Рулон')} {m(rollW)} м: {c.strips} {t('полотен по', 'полотен по')} {m(c.stripLen)} м = <b>{fmt(c.lengthM)} {t('м.п.', 'м.п.')}</b> ({fmt(c.buyM2)} м²), {t('стиків', 'стыков')}: {c.seams}
+          {t('Рулон', 'Рулон')} {m(rollW)} м: {countNoun(c.strips, 'strip', lang)} {t('по', 'по')} {m(c.stripLen)} м = <b>{fmt(c.lengthM)} {t('м.п.', 'м.п.')}</b> ({fmt(c.buyM2)} м²), {countNoun(c.seams, 'seam', lang)}
         </div>
         {!!floor.price && <div>{t('Вартість', 'Стоимость')}: <b>{money(c.buyM2 * floor.price)}</b></div>}
       </div>,
@@ -256,7 +257,7 @@ function RoomMaterials({ room, level, project, surfaces }: { room: Room; level: 
       <div className="calc-box" key="packs" data-calc="packs">
         <b>{ls(floor.name)}</b>
         <div>
-          {fmt(room.area)} м² + {resFloor}% = {fmt(c.areaM2)} м² → <b>{c.packs} {t('уп.', 'уп.')}</b> {t('по', 'по')} {fmt(floor.packArea!)} м² ({fmt(c.buyM2)} м²)
+          {fmt(room.area)} м² + {resFloor}% = {fmt(c.areaM2)} м² → <b>{countNoun(c.packs, 'pack', lang)}</b> {t('по', 'по')} {fmt(floor.packArea!)} м² ({fmt(c.buyM2)} м²)
         </div>
         {!!floor.price && <div>{t('Вартість', 'Стоимость')}: <b>{money(c.buyM2 * floor.price)}</b></div>}
       </div>,
@@ -276,7 +277,7 @@ function RoomMaterials({ room, level, project, surfaces }: { room: Room; level: 
       <div className="calc-box" key={`wp${id}`} data-calc="wallpaper">
         <b>{ls(f.name)}</b>
         <div>
-          {t('Полотен', 'Полотен')}: {c.strips} {t('по', 'по')} {m(c.stripLen)} м{f.rapport ? ` (${t('рапорт', 'раппорт')} ${f.rapport} мм)` : ''}; {t('з рулону', 'из рулона')} — {c.perRoll} → <b>{c.rolls} {t('рул.', 'рул.')}</b>
+          {countNoun(c.strips, 'strip', lang)} {t('по', 'по')} {m(c.stripLen)} м{f.rapport ? ` (${t('рапорт', 'раппорт')} ${f.rapport} мм)` : ''}; {t('з рулону', 'из рулона')} — {countNoun(c.perRoll, 'strip', lang)} → <b>{countNoun(c.rolls, 'roll', lang)}</b>
         </div>
         {c.tooShort && <div className="warn-text">{t('Рулон коротший за одне полотно', 'Рулон короче одного полотна')}</div>}
         {!!f.price && <div>{t('Вартість', 'Стоимость')}: <b>{money(c.rolls * f.price)}</b></div>}
@@ -698,21 +699,11 @@ function common<T, V>(list: T[], get: (x: T) => V): V | undefined {
   return list.every((x) => get(x) === v) ? v : undefined;
 }
 
-const TYPE_NAMES: Record<Sel['type'], [string, string]> = {
-  wall: ['стін', 'стен'],
-  opening: ['прорізів', 'проёмов'],
-  room: ['приміщень', 'помещений'],
-  item: ['об’єктів', 'объектов'],
-  route: ['трас', 'трасс'],
-  zone: ['зон', 'зон'],
-  dim: ['розмірів', 'размеров'],
-  site: ['ділянка', 'участок'],
-  underlay: ['підкладка', 'подложка'],
-};
 
 /** Свойства группы: общие поля однотипных объектов, выравнивание и распределение. */
 function GroupProps({ sels, project }: { sels: Sel[]; project: Project }) {
-  const { t, ls } = useT();
+  const { t, ls, lang } = useT();
+  const selText = selectionText(sels, lang);
   const mixed = t('різні', 'разные');
   const lab = (name: string, v: unknown) => (v === undefined ? `${name} (${mixed})` : name);
   const counts = new Map<Sel['type'], number>();
@@ -767,9 +758,9 @@ function GroupProps({ sels, project }: { sels: Sel[]; project: Project }) {
     ['bottom', '⤓', 'По нижньому краю', 'По нижнему краю'],
   ];
   return (
-    <Section title={`${t('Виділено', 'Выделено')}: ${sels.length}`}>
+    <Section title={`${t('Виділено', 'Выделено')}: ${selText.total}`}>
       <div data-group-props={sels.length}>
-        <p className="hint">{[...counts.entries()].map(([k, n]) => `${n} ${t(TYPE_NAMES[k][0], TYPE_NAMES[k][1])}`).join(', ')}</p>
+        {selText.parts.length > 0 && <p className="hint">{selText.parts.join(', ')}</p>}
         {only('wall') && walls.length > 0 && (
           <>
             <Num label={lab(t('Товщина', 'Толщина'), common(walls, (w) => w.thickness))} value={walls[0].thickness} min={30} max={1000} step={10} unit="мм" onChange={(v) => mutAll<Wall>('wall', (w) => (w.thickness = v))} />

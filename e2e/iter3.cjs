@@ -247,6 +247,37 @@ const fs = require('fs');
   await page.screenshot({ path: path.join(out, '56-wall-align.png') });
   await page.keyboard.press('Escape');
 
+  // ── 7. склонения в счётчиках ──
+  const statusSel = async () => (await count('.statusbar [data-count]')) ? (await page.textContent('.statusbar [data-count]')).trim() : '';
+  const groupTitle = async () => (await page.textContent('.right-panel .panel-section h4, .right-panel .panel-section > header, .right-panel .section-title').catch(() => '')) || (await page.textContent('.right-panel'));
+  await clickWorld(page, 2000, 2500);
+  await shiftClick3(4000, 2500);
+  check('7 два объекта: «2 стіни»', (await statusSel()) === 'Виділено: 2 стіни' && /Виділено: 2 стіни/i.test(await groupTitle()), await statusSel());
+  await shiftClick3(6000, 2500);
+  check('7 три объекта: «3 стіни»', (await statusSel()) === 'Виділено: 3 стіни', await statusSel());
+  await page.keyboard.press('Control+KeyA');
+  const nAll = (await ui()).multi.length;
+  check('7 семь стен: «7 стін»', nAll === 7 && (await statusSel()) === 'Виділено: 7 стін', await statusSel());
+  await page.click('.topbar >> text=РУС');
+  check('7 по-русски: «7 стен»', (await statusSel()) === 'Выделено: 7 стен', await statusSel());
+  await page.keyboard.press('Escape');
+  await clickWorld(page, 2000, 2500);
+  await shiftClick3(4000, 2500);
+  check('7 по-русски: «2 стены»', (await statusSel()) === 'Выделено: 2 стены', await statusSel());
+  await page.click('.topbar >> text=УКР');
+  await page.keyboard.press('Escape');
+  // разнотипное выделение: общий счётчик «N об’єктів» и разбивка по типам
+  await page.evaluate(() => {
+    const st = window.__hb.useProject.getState();
+    const l = st.project.levels[0];
+    const ui2 = window.__hb.useUi.getState();
+    st.update((d) => { d.levels[0].dims.push({ id: 'dm-test', a: { x: 0, y: 0 }, b: { x: 2000, y: 0 }, offset: -400 }); });
+    ui2.selectMany([{ type: 'wall', id: l.walls[0].id, scope: l.id }, { type: 'wall', id: l.walls[1].id, scope: l.id }, { type: 'dim', id: 'dm-test', scope: l.id }]);
+  });
+  const mixedTxt = await page.textContent('[data-group-props]');
+  check('7 разнотипное выделение: «3 об’єкти» и разбивка «2 стіни, 1 розмір»', (await statusSel()) === 'Виділено: 3 об’єкти' && /2 стіни, 1 розмір/.test(mixedTxt), `${await statusSel()} | ${mixedTxt.slice(0, 40)}`);
+  await page.keyboard.press('Escape');
+
   check('нет ошибок в консоли', errors.length === 0, errors.slice(0, 5).join(' | '));
   await browser.close();
 })().catch((e) => {

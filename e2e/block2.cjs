@@ -97,9 +97,9 @@ const fs = require('fs');
   const rp = await page.textContent('.right-panel');
   const packs = await page.textContent('[data-calc="packs"]');
   const wp = await page.textContent('[data-calc="wallpaper"]');
-  check('2.4 помещение: упаковки ламината с ценой', /уп\./.test(packs) && /Вартість/.test(packs), packs);
+  check('2.4 помещение: упаковки ламината с ценой', /10 упаковок/.test(packs) && /Вартість/.test(packs), packs);
   // полотно: 2600 + 100 = 2700 → кратно раппорту 640 → 3200 мм; из рулона 10,05 м — 3 полотна
-  check('2.4 помещение: рулоны обоев с учётом раппорта и высоты', /по 3,20? м/.test(wp) && /рапорт 640/.test(wp) && /з рулону — 3/.test(wp) && /рул\./.test(wp) && /Вартість/.test(wp), wp);
+  check('2.4 помещение: рулоны обоев с учётом раппорта и высоты', /по 3,20? м/.test(wp) && /рапорт 640/.test(wp) && /з рулону — 3 полотна/.test(wp) && /10 рулонів/.test(wp) && /Вартість/.test(wp), wp);
   check('свойства помещения показывают расчёт материалов', /Матеріали — розрахунок/.test(rp));
 
   // ── 3D: текстуры на полу и стенах спальни ──
@@ -138,7 +138,7 @@ const fs = require('fs');
   const num = (t) => Number(String(t).replace(/\s/g, '').replace(',', '.'));
   const wr = await row(`wallpaper.${fin.id}`);
   check('2.4 смета: обои — в рулонах, цена из материала, ссылка на товар', !!wr && /рулон/.test(wr.tds[1]) && num(wr.price) === 850 && wr.src === 1 && wr.href === SHOP, JSON.stringify(wr));
-  check('2.4 смета: примечание с раппортом и числом полотен из рулона', !!wr && /рапорт 640/.test(wr.tds[0]) && /3 полотен з рулону/.test(wr.tds[0]), wr && wr.tds[0]);
+  check('2.4 смета: примечание с раппортом и числом полотен из рулона', !!wr && /рапорт 640/.test(wr.tds[0]) && /3 полотна з рулону/.test(wr.tds[0]), wr && wr.tds[0]);
   check('2.4 смета: сумма по обоям = рулоны × цена', !!wr && num(wr.tds[5]) === num(wr.tds[3]) * 850 && num(wr.tds[3]) >= 4, wr && `${wr.tds[3]} × 850 = ${wr.tds[5]}`);
   const lr = await row('flooring.laminate-walnut.pack');
   check('2.4 смета: ламинат — в упаковках, цена упаковки = цена м² × площадь упаковки', !!lr && /уп\./.test(lr.tds[1]) && Math.abs(num(lr.price) - 520 * 1.73) < 0.01 && Number.isInteger(num(lr.tds[3])) && num(lr.tds[5]) > 0, JSON.stringify(lr));

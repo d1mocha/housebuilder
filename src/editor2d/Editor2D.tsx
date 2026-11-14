@@ -17,6 +17,7 @@ import { deleteSelection, duplicateSelection, selectWithMode } from '../store/ac
 import { useProject } from '../store/projectStore';
 import { MODE_LAYERS, useUi } from '../store/uiStore';
 import { alignSnap } from './align';
+import { selectionText } from '../ui/selectionText';
 import { ContextMenu } from './ContextMenu';
 import type { MenuEntry } from './ContextMenu';
 import { snapItemToWalls } from './itemSnap';
@@ -35,7 +36,7 @@ type Drag =
   | { kind: 'handle'; sel: Sel; h: string; i: number; start: Vec2; orig: Vec2; moved: boolean };
 
 export function Editor2D() {
-  const { t, ls } = useT();
+  const { t, ls, lang } = useT();
   const project = useProject((s) => s.project);
   const tool = useUi((s) => s.tool);
   const toolKind = useUi((s) => s.toolKind);
@@ -1177,7 +1178,7 @@ export function Editor2D() {
         )}
         {multi.length > 1 && (
           <span className="accent" data-count={multi.length}>
-            {t('Виділено', 'Выделено')}: {multi.length}
+            {t('Виділено', 'Выделено')}: {selectionText(multi, lang).total}
           </span>
         )}
         {tool === 'wall' && pv.pts.length === 1 && <span className="accent">{pv.typed ? `${t('Довжина', 'Длина')}: ${pv.typed} мм ⏎` : t('Введіть довжину цифрами та натисніть Enter', 'Введите длину цифрами и нажмите Enter')}</span>}
