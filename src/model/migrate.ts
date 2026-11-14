@@ -1,4 +1,5 @@
 import { defaultCabinetCatalog } from '../cabinet/catalog';
+import { finishInUse, isEmptyShopDraft } from '../calc/materials';
 import { defaultFinishes } from '../catalog/finishes';
 import { SCHEMA_VERSION, defaultGroups } from './defaults';
 import type { Project } from './types';
@@ -52,6 +53,8 @@ export function migrateProject(raw: Project): Project {
       boards: [...p.cabinetCatalog.boards.map((b) => ({ ...b, textureId: b.textureId ?? boards.find((x) => x.id === b.id)?.textureId })), ...boards.filter((b) => !haveB.has(b.id))],
     };
   }
+  // пустые черновики «товара из магазина» (созданные и брошенные в старых версиях) не хранятся
+  p.finishes = p.finishes.filter((f) => !(isEmptyShopDraft(f) && !finishInUse(p, f.id)));
   p.models = p.models ?? [];
   p.electrical = p.electrical ?? { groups: defaultGroups() };
   p.baseline = p.baseline ?? null;

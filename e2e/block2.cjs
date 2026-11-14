@@ -57,10 +57,10 @@ const fs = require('fs');
 
   // ── обои: товар из магазина ──
   await page.selectOption('[data-shop-type]', 'wallpaper');
+  const finBefore = (await P()).finishes.length;
   await page.click('[data-action="add-shop"]');
   p = await P();
-  const shopFin = p.finishes[p.finishes.length - 1];
-  check('2.3 «товар из магазина» создаёт материал со ссылкой', shopFin.type === 'wallpaper' && shopFin.shopUrl === '');
+  check('2.3 «товар из магазина» открывает форму, материал ещё не создан', p.finishes.length === finBefore && (await page.locator('[data-draft-bar]').count()) === 1 && (await page.locator('[data-action="save-draft"]').isDisabled()));
   check('2.3 без ссылки кнопка «Відкрити в магазині» неактивна', await page.locator('button[data-action="open-shop"]').isDisabled());
   await page.fill('[data-field="shopUrl"]', SHOP);
   await page.fill('[data-field="name"]', 'Шпалери вінілові «Дамаск» (магазин)');
@@ -71,6 +71,10 @@ const fs = require('fs');
     await f.press('Enter');
   }
   await page.click('[data-texture="wallpaper-damask"]');
+  await page.click('[data-action="save-draft"]');
+  p = await P();
+  const shopFin = p.finishes[p.finishes.length - 1];
+  check('2.3 материал создаётся по кнопке «Зберегти»', p.finishes.length === finBefore + 1 && shopFin.type === 'wallpaper' && shopFin.shopUrl === SHOP && (await page.locator('[data-draft-bar]').count()) === 0);
   const link = page.locator('a[data-action="open-shop"]');
   check('2.3 кнопка «Відкрити в магазині» ведёт на введённую ссылку в новой вкладке', (await link.getAttribute('href')) === SHOP && (await link.getAttribute('target')) === '_blank' && /noopener/.test(await link.getAttribute('rel')));
   await page.click('[data-apply="walls"]');

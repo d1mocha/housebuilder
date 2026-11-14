@@ -1,12 +1,14 @@
 // Итерация 3: сдвиг стен (проёмы на месте, мебель едет со стеной, коллизии) и остальные пункты.
 import { describe, expect, it } from 'vitest';
 import '../src/catalog';
+import { finishInUse, isEmptyShopDraft, shopDraftProblem } from '../src/calc/materials';
 import { count, countNoun, plural } from '../src/i18n';
 import { convexOverlap, itemsFlushToWall, itemsInWalls, openingsOutOfWall, orphanItems } from '../src/model/checks';
 import { createProject, createWall, roomDefaults } from '../src/model/defaults';
 import { createDemoProject } from '../src/model/demo';
 import { keepOpenings, makeItem, moveEntities, moveNode, removeEntity, translateWall, translateWalls } from '../src/model/ops';
-import type { Level, Opening, Sel } from '../src/model/types';
+import { migrateProject } from '../src/model/migrate';
+import type { Finish, Level, Opening, Project, Sel } from '../src/model/types';
 import { syncRooms } from '../src/model/walls';
 import { validateProject } from '../src/rules/validate';
 
@@ -211,5 +213,37 @@ describe('7. склонения в счётчиках', () => {
     expect(countNoun(28, 'part', 'uk')).toBe('28 деталей');
     expect(countNoun(2, 'opening', 'ru')).toBe('2 проёма');
     expect(countNoun(21, 'room', 'uk')).toBe('21 приміщення');
+  });
+});
+
+describe('3. товар из магазина: пустые черновики не сохраняются', () => {
+  const draft = (over: Partial<Finish> = {}): Finish => ({ id: 'd1', name: { uk: 'Шпалери: товар з магазину', ru: 'Обои: товар из магазина' }, type: 'wallpaper', color: '#d8d4cc', target: ['wall'], shopUrl: '', ...over });
+  it('пустой черновик определяется; ссылка, своё имя, цена или артикул делают его содержательным', () => {
+    expect(isEmptyShopDraft(draft())).toBe(true);
+    expect(shopDraftProblem(draft())).toBe('empty');
+    expect(isEmptyShopDraft(draft({ shopUrl: 'https://shop.example.com/a' }))).toBe(false);
+    expect(isEmptyShopDraft(draft({ name: { uk: 'Шпалери «Дамаск»', ru: 'Обои «Дамаск»' } }))).toBe(false);
+    expect(isEmptyShopDraft(draft({ price: 850 }))).toBe(false);
+    expect(isEmptyShopDraft(draft({ shopSku: 'A-17' }))).toBe(false);
+    expect(isEmptyShopDraft({ ...draft(), shopUrl: undefined })).toBe(false); // обычный материал — не черновик товара
+  });
+  it('причины отказа в сохранении', () => {
+    expect(shopDraftProblem(draft({ shopUrl: 'shop.example.com/a' }))).toBe('badUrl');
+    expect(shopDraftProblem(draft({ shopUrl: 'javascript:alert(1)', price: 10 }))).toBe('badUrl');
+    expect(shopDraftProblem(draft({ name: { uk: ' ', ru: '' }, price: 10 }))).toBe('noName');
+    expect(shopDraftProblem(draft({ shopUrl: 'https://shop.example.com/a' }))).toBeNull();
+    expect(shopDraftProblem(draft({ price: 100 }))).toBeNull();
+  });
+  it('при открытии проекта брошенные пустые черновики убираются, используемые — остаются', () => {
+    const p = JSON.parse(JSON.stringify(createDemoProject())) as Project;
+    p.finishes.push(draft({ id: 'empty-unused' }), draft({ id: 'empty-used' }), draft({ id: 'filled', shopUrl: 'https://shop.example.com/x' }));
+    p.levels[0].rooms[0].floorFinish = 'empty-used';
+    expect(finishInUse(p, 'empty-used')).toBe(true);
+    expect(finishInUse(p, 'empty-unused')).toBe(false);
+    const m = migrateProject(p);
+    const ids = m.finishes.map((f) => f.id);
+    expect(ids).not.toContain('empty-unused');
+    expect(ids).toContain('empty-used');
+    expect(ids).toContain('filled');
   });
 });

@@ -1334,3 +1334,19 @@ table.data tr[data-part-row] {
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.14);
   line-height: 1.35;
 }
+.draft-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 10px;
+  margin-bottom: 8px;
+  background: #fff8eb;
+  border: 1px solid #f2c078;
+  border-radius: var(--radius);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.row.actions[hidden] {
+  display: none;
+}

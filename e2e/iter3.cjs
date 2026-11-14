@@ -98,6 +98,52 @@ const fs = require('fs');
   // вернуть стулья на место, чтобы следующие проверки шли на чистом демо
   await openDemo();
 
+  // ── 3. «Товар з магазину»: форма, материал создаётся только по «Зберегти» ──
+  const P = () => page.evaluate(() => window.__hb.useProject.getState().project);
+  let pr = await P();
+  const bed = pr.levels[0].rooms.find((r) => r.type === 'bedroom');
+  await clickWorld(page, bed.seed.x, bed.seed.y);
+  await page.click('[data-action="materials"]');
+  await page.waitForSelector('[data-dialog="materials"]');
+  const fin0 = pr.finishes.length;
+  const past0 = (await state(page)).past;
+  await page.selectOption('[data-shop-type]', 'laminate');
+  await page.click('[data-action="add-shop"]');
+  pr = await P();
+  check('3 форма товара открыта, материал не создан, история не тронута', pr.finishes.length === fin0 && (await count('[data-draft-bar]')) === 1 && (await state(page)).past === past0);
+  check('3 пустой черновик нельзя сохранить', (await page.locator('[data-action="save-draft"]').isDisabled()) && (await page.getAttribute('[data-draft-problem]', 'data-draft-problem')) === 'empty');
+  check('3 в форме сначала идут ссылка и данные магазина', (await count('[data-draft] [data-field="shopUrl"]')) === 1 && (await count('[data-draft] [data-apply]')) === 0);
+  await page.click('[data-action="cancel-draft"]');
+  pr = await P();
+  check('3 «Скасувати» ничего не сохраняет', pr.finishes.length === fin0 && (await count('[data-draft-bar]')) === 0);
+  // черновик с параметрами, но без сохранения: закрыть диалог
+  await page.click('[data-action="add-shop"]');
+  await page.fill('[data-field="shopUrl"]', 'https://shop.example.com/laminat/777');
+  await page.click('.dialog > header button');
+  pr = await P();
+  check('3 закрытие диалога с несохранённой формой не создаёт материал', pr.finishes.length === fin0 && (await state(page)).past === past0);
+  // неверная ссылка → нельзя; верная → можно
+  await page.click('[data-action="materials"]');
+  await page.waitForSelector('[data-dialog="materials"]');
+  await page.selectOption('[data-shop-type]', 'laminate');
+  await page.click('[data-action="add-shop"]');
+  await page.fill('[data-field="shopUrl"]', 'shop.example.com/laminat/777');
+  check('3 ссылка без http(s) не принимается', (await page.locator('[data-action="save-draft"]').isDisabled()) && (await page.getAttribute('[data-draft-problem]', 'data-draft-problem')) === 'badUrl');
+  await page.fill('[data-field="shopUrl"]', 'https://shop.example.com/laminat/777');
+  await page.fill('[data-field="name"]', 'Ламінат «Дуб альпійський» (магазин)');
+  const priceF = page.locator('[data-edit] label.field', { hasText: 'Ціна за одиницю' }).locator('input');
+  await priceF.fill('640');
+  await priceF.press('Enter');
+  pr = await P();
+  check('3 правки формы не попадают в проект до сохранения', pr.finishes.length === fin0 && (await count('[data-draft-problem]')) === 0 && !(await page.locator('[data-action="save-draft"]').isDisabled()));
+  await page.click('[data-action="save-draft"]');
+  pr = await P();
+  const saved = pr.finishes[pr.finishes.length - 1];
+  check('3 «Зберегти» создаёт материал одной записью истории', pr.finishes.length === fin0 + 1 && saved.shopUrl === 'https://shop.example.com/laminat/777' && saved.price === 640 && saved.name.uk === 'Ламінат «Дуб альпійський» (магазин)' && saved.type === 'laminate' && (await state(page)).past === past0 + 1, JSON.stringify({ n: pr.finishes.length, url: saved.shopUrl, price: saved.price }));
+  check('3 сохранённый товар выбран в списке и доступен для назначения помещению', (await page.getAttribute('.mat-item.active', 'data-finish')) === saved.id && (await count('[data-apply="floor"]')) === 1);
+  await page.screenshot({ path: path.join(out, '53-shop-saved.png') });
+  await page.click('.dialog > header button');
+
   check('нет ошибок в консоли', errors.length === 0, errors.slice(0, 5).join(' | '));
   await browser.close();
 })().catch((e) => {

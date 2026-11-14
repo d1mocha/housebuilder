@@ -1,7 +1,8 @@
 // Каталог материалов отделки: текстура (библиотека CC0 или своё фото), масштаб и поворот укладки,
 // параметры для расчёта, цена, «товар из магазина» (только ссылка и введённые вручную данные).
+import { produce } from 'immer';
 import { useMemo, useState } from 'react';
-import { PRICE_UNIT_NAMES, finishPriceUnit, safeShopUrl } from '../calc/materials';
+import { PRICE_UNIT_NAMES, finishPriceUnit, safeShopUrl, shopDraftProblem } from '../calc/materials';
 import { isPlankType, isTileType } from '../calc/tiles';
 import { FINISH_TYPE_NAMES } from '../catalog/finishes';
 import { TEXTURES, TEXTURE_CATEGORY_NAMES, textureDef, textureUrl } from '../catalog/textures';
@@ -132,19 +133,45 @@ export function MaterialsDialog({ onClose }: { onClose: () => void }) {
   const [typeFilter, setTypeFilter] = useState<FinishType | ''>('');
   const [shopType, setShopType] = useState<FinishType>('wallpaper');
   const [allTex, setAllTex] = useState(false);
-  const cur = finishes.find((f) => f.id === curId);
+  /** Черновик товара из магазина: живёт только в форме, в проект попадает по кнопке «Зберегти». */
+  const [draft, setDraft] = useState<Finish | null>(null);
+  const cur = draft ?? finishes.find((f) => f.id === curId);
   const upd = useProject.getState().update;
-  const mut = (fn: (f: Finish) => void) =>
+  const mut = (fn: (f: Finish) => void) => {
+    if (draft) {
+      setDraft((d) => d && produce(d, (x) => void fn(x)));
+      return;
+    }
     upd((d) => {
       const f = d.finishes.find((x) => x.id === curId);
       if (f) fn(f);
     });
+  };
   const add = (type: FinishType, shop = false) => {
-    const f = newFinish(type, shop);
-    upd((d) => void d.finishes.push(f));
-    setCurId(f.id);
     setTypeFilter('');
     setQ('');
+    if (shop) {
+      // форма нового товара: материал пока не создан
+      setDraft(newFinish(type, true));
+      return;
+    }
+    const f = newFinish(type, false);
+    upd((d) => void d.finishes.push(f));
+    setDraft(null);
+    setCurId(f.id);
+  };
+  const draftProblem = draft ? shopDraftProblem(draft) : null;
+  const saveDraft = () => {
+    if (!draft || draftProblem) return;
+    const f: Finish = { ...draft, shopUrl: safeShopUrl(draft.shopUrl) ?? '' };
+    upd((d) => void d.finishes.push(f));
+    setDraft(null);
+    setCurId(f.id);
+    useUi.getState().notify(t('Товар збережено в матеріалах проєкту', 'Товар сохранён в материалах проекта'));
+  };
+  const pickExisting = (id: string) => {
+    setDraft(null);
+    setCurId(id);
   };
   const list = useMemo(() => finishes.filter((f) => (!typeFilter || f.type === typeFilter) && (!q || `${f.name.uk} ${f.name.ru} ${f.shopTitle ?? ''}`.toLowerCase().includes(q.toLowerCase()))), [finishes, typeFilter, q]);
   const types = useMemo(() => [...new Set(finishes.map((f) => f.type))], [finishes]);
@@ -174,6 +201,49 @@ export function MaterialsDialog({ onClose }: { onClose: () => void }) {
   const unit = cur ? ls(PRICE_UNIT_NAMES[finishPriceUnit(cur)]) : '';
   const shopHref = safeShopUrl(cur?.shopUrl);
   const tiled = cur ? isTileType(cur.type) || isPlankType(cur.type) : false;
+
+  const shopSection = cur ? (
+    <>
+      <h4>🛒 {t('Товар з магазину', 'Товар из магазина')}</h4>
+            {cur.shopUrl === undefined ? (
+              <div className="row">
+                <button data-action="make-shop" onClick={() => mut((x) => (x.shopUrl = ''))}>
+                  {t('Прив’язати посилання на товар…', 'Привязать ссылку на товар…')}
+                </button>
+              </div>
+            ) : (
+              <div className="shop-box" data-shop>
+                <label className="field wide">
+                  <span>{t('Посилання на товар', 'Ссылка на товар')}</span>
+                  <input type="url" placeholder="https://…" value={cur.shopUrl} data-field="shopUrl" onChange={(e) => mut((x) => (x.shopUrl = e.target.value))} />
+                </label>
+                <div className="grid2">
+                  <Text label={t('Назва в магазині', 'Название в магазине')} value={cur.shopTitle ?? ''} onChange={(v) => mut((x) => (x.shopTitle = v))} />
+                  <Text label={t('Артикул', 'Артикул')} value={cur.shopSku ?? ''} onChange={(v) => mut((x) => (x.shopSku = v))} />
+                </div>
+                <div className="row">
+                  {shopHref ? (
+                    <a className="btn primary" href={shopHref} target="_blank" rel="noopener noreferrer" data-action="open-shop">
+                      {t('Відкрити в магазині', 'Открыть в магазине')} ↗
+                    </a>
+                  ) : (
+                    <button disabled data-action="open-shop">
+                      {t('Відкрити в магазині', 'Открыть в магазине')} ↗
+                    </button>
+                  )}
+                  {!draft && <button onClick={() => mut((x) => (delete x.shopUrl, delete x.shopTitle, delete x.shopSku))}>{t('Відв’язати', 'Отвязать')}</button>}
+                </div>
+                <p className="hint">
+                  {t(
+                    'Застосунок не читає сайт магазину: він зберігає лише посилання. Параметри (розмір рулону, рапорт, формат, площу в упаковці) і ціну введіть вручну з картки товару; вигляд — оберіть схожу текстуру з бібліотеки або додайте своє фото.',
+                    'Приложение не читает сайт магазина: оно хранит только ссылку. Параметры (размер рулона, раппорт, формат, площадь в упаковке) и цену введите вручную из карточки товара; внешний вид — выберите похожую текстуру из библиотеки или добавьте своё фото.',
+                  )}
+                </p>
+              </div>
+            )}
+
+    </>
+  ) : null;
 
   return (
     <Dialog
@@ -217,7 +287,7 @@ export function MaterialsDialog({ onClose }: { onClose: () => void }) {
           </div>
           <div className="mat-items">
             {list.map((f) => (
-              <button key={f.id} className={`mat-item ${f.id === curId ? 'active' : ''}`} onClick={() => setCurId(f.id)} data-finish={f.id}>
+              <button key={f.id} className={`mat-item ${!draft && f.id === curId ? 'active' : ''}`} onClick={() => pickExisting(f.id)} data-finish={f.id}>
                 <FinishSwatch f={f} />
                 <span className="mat-item-text">
                   <b>{ls(f.name)}</b>
@@ -233,7 +303,31 @@ export function MaterialsDialog({ onClose }: { onClose: () => void }) {
           </div>
         </div>
         {cur ? (
-          <div className="mat-edit" data-edit={cur.id}>
+          <div className="mat-edit" data-edit={cur.id} data-draft={draft ? '1' : undefined}>
+            {draft && (
+              <div className="draft-bar" data-draft-bar>
+                <span>
+                  🛒 <b>{t('Новий товар з магазину', 'Новый товар из магазина')}</b> — {t('ще не збережено. Заповніть посилання, параметри й ціну та натисніть «Зберегти».', 'ещё не сохранён. Заполните ссылку, параметры и цену и нажмите «Зберегти».')}
+                </span>
+                <span className="grow" />
+                <button className="primary" data-action="save-draft" disabled={!!draftProblem} onClick={saveDraft}>
+                  {t('Зберегти', 'Сохранить')}
+                </button>
+                <button data-action="cancel-draft" onClick={() => setDraft(null)}>
+                  {t('Скасувати', 'Отмена')}
+                </button>
+              </div>
+            )}
+            {draft && draftProblem && (
+              <p className="hint" data-draft-problem={draftProblem}>
+                {draftProblem === 'badUrl'
+                  ? t('Посилання має починатися з http:// або https://.', 'Ссылка должна начинаться с http:// или https://.')
+                  : draftProblem === 'noName'
+                    ? t('Вкажіть назву матеріалу.', 'Укажите название материала.')
+                    : t('Порожній товар не зберігається: вкажіть посилання на товар, або змініть назву, або задайте ціну.', 'Пустой товар не сохраняется: укажите ссылку на товар, или измените название, или задайте цену.')}
+              </p>
+            )}
+            {draft && shopSection}
             <div className="mat-head">
               <FinishSwatch f={cur} size={72} />
               <div className="grow">
@@ -257,7 +351,7 @@ export function MaterialsDialog({ onClose }: { onClose: () => void }) {
               </div>
             </div>
 
-            {room && (
+            {room && !draft && (
               <div className="mat-apply" data-apply-room={room.id}>
                 <span>
                   {t('Призначити приміщенню', 'Назначить помещению')} «{room.name}»:
@@ -391,45 +485,17 @@ export function MaterialsDialog({ onClose }: { onClose: () => void }) {
             </div>
             {tiled && (!cur.tileW || !cur.tileH) && <p className="hint">{t('Без розмірів елемента матеріал рахується за площею, текстура кладеться як є.', 'Без размеров элемента материал считается по площади, текстура кладётся как есть.')}</p>}
 
-            <h4>🛒 {t('Товар з магазину', 'Товар из магазина')}</h4>
-            {cur.shopUrl === undefined ? (
-              <div className="row">
-                <button data-action="make-shop" onClick={() => mut((x) => (x.shopUrl = ''))}>
-                  {t('Прив’язати посилання на товар…', 'Привязать ссылку на товар…')}
+            {!draft && shopSection}
+
+            {draft && (
+              <div className="row actions">
+                <button className="primary" data-action="save-draft-bottom" disabled={!!draftProblem} onClick={saveDraft}>
+                  {t('Зберегти', 'Сохранить')}
                 </button>
-              </div>
-            ) : (
-              <div className="shop-box" data-shop>
-                <label className="field wide">
-                  <span>{t('Посилання на товар', 'Ссылка на товар')}</span>
-                  <input type="url" placeholder="https://…" value={cur.shopUrl} data-field="shopUrl" onChange={(e) => mut((x) => (x.shopUrl = e.target.value))} />
-                </label>
-                <div className="grid2">
-                  <Text label={t('Назва в магазині', 'Название в магазине')} value={cur.shopTitle ?? ''} onChange={(v) => mut((x) => (x.shopTitle = v))} />
-                  <Text label={t('Артикул', 'Артикул')} value={cur.shopSku ?? ''} onChange={(v) => mut((x) => (x.shopSku = v))} />
-                </div>
-                <div className="row">
-                  {shopHref ? (
-                    <a className="btn primary" href={shopHref} target="_blank" rel="noopener noreferrer" data-action="open-shop">
-                      {t('Відкрити в магазині', 'Открыть в магазине')} ↗
-                    </a>
-                  ) : (
-                    <button disabled data-action="open-shop">
-                      {t('Відкрити в магазині', 'Открыть в магазине')} ↗
-                    </button>
-                  )}
-                  <button onClick={() => mut((x) => (delete x.shopUrl, delete x.shopTitle, delete x.shopSku))}>{t('Відв’язати', 'Отвязать')}</button>
-                </div>
-                <p className="hint">
-                  {t(
-                    'Застосунок не читає сайт магазину: він зберігає лише посилання. Параметри (розмір рулону, рапорт, формат, площу в упаковці) і ціну введіть вручну з картки товару; вигляд — оберіть схожу текстуру з бібліотеки або додайте своє фото.',
-                    'Приложение не читает сайт магазина: оно хранит только ссылку. Параметры (размер рулона, раппорт, формат, площадь в упаковке) и цену введите вручную из карточки товара; внешний вид — выберите похожую текстуру из библиотеки или добавьте своё фото.',
-                  )}
-                </p>
+                <button onClick={() => setDraft(null)}>{t('Скасувати', 'Отмена')}</button>
               </div>
             )}
-
-            <div className="row actions">
+            <div className="row actions" hidden={!!draft}>
               <button
                 onClick={() => {
                   const copy: Finish = { ...cur, id: newId('fin'), name: { uk: `${cur.name.uk} (копія)`, ru: `${cur.name.ru} (копия)` }, target: [...cur.target] };
