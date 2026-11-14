@@ -144,6 +144,35 @@ const fs = require('fs');
   await page.screenshot({ path: path.join(out, '53-shop-saved.png') });
   await page.click('.dialog > header button');
 
+  // ── 4. прогулка: высота глаз, свободная точка старта, подвесы не ниже 2,1 м ──
+  await openDemo();
+  await page.click('[data-view="3d"]');
+  await page.waitForSelector('.view3d canvas');
+  await page.waitForTimeout(1500);
+  await page.keyboard.press('KeyF');
+  await page.waitForFunction(() => !!window.__hbCam, null, { timeout: 10000 });
+  await page.waitForTimeout(1200);
+  const cam = await page.evaluate(() => window.__hbCam());
+  check('4 прогулка стартует на высоте глаз 1,6 м', Math.abs(cam.y - 1.6) < 0.001, String(cam.y));
+  const walkInfo = await page.evaluate((c) => {
+    const l = window.__hb.useProject.getState().project.levels[0];
+    const inPoly = (p, poly) => { let r = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const a = poly[i], b = poly[j]; if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) r = !r; } return r; };
+    const pos = { x: c.x * 1000, y: c.z * 1000 };
+    const room = l.rooms.find((r) => inPoly(pos, r.polygon));
+    const pend = l.items.filter((i) => i.kind === 'lamp-pendant');
+    const dPend = Math.min(...pend.map((i) => Math.hypot(i.x - pos.x, i.y - pos.y)));
+    // подвес в секторе взгляда ±45° ближе 1,5 м?
+    const fwd = { x: -Math.sin(c.yaw), y: -Math.cos(c.yaw) };
+    const inView = pend.some((i) => { const d = Math.hypot(i.x - pos.x, i.y - pos.y); const cos = ((i.x - pos.x) * fwd.x + (i.y - pos.y) * fwd.y) / (d || 1); return d < 1500 + 190 && cos > Math.cos(Math.PI / 4); });
+    return { room: room?.name, biggest: [...l.rooms].sort((a, b) => b.area - a.area)[0].name, dPend: Math.round(dPend), inView, pendZ: pend.map((i) => i.z) };
+  }, cam);
+  check('4 старт — в самой большой комнате, подвесной светильник не ближе 0,6 м и не в поле зрения', walkInfo.room === walkInfo.biggest && walkInfo.dPend >= 600 + 190 - 1 && !walkInfo.inView, JSON.stringify(walkInfo));
+  check('4 низ подвесных светильников — не ниже 2,1 м', walkInfo.pendZ.length >= 2 && walkInfo.pendZ.every((z) => z >= 2100), walkInfo.pendZ.join(','));
+  await page.screenshot({ path: path.join(out, '54-walk-start.png') });
+  await page.keyboard.press('KeyF');
+  await page.click('[data-view="2d"]');
+  await page.waitForTimeout(300);
+
   check('нет ошибок в консоли', errors.length === 0, errors.slice(0, 5).join(' | '));
   await browser.close();
 })().catch((e) => {

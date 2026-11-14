@@ -226,12 +226,45 @@ export function flipWall(level: Level, wallId: string): void {
 }
 
 /** Создать объект библиотеки. */
+/** Низ подвесного светильника по умолчанию — не ниже этой отметки от пола, мм. */
+export const MIN_HANGING_BOTTOM = 2100;
+/** Меньше этой высоты подвес не укорачивается (иначе это уже потолочный светильник), мм. */
+export const MIN_HANGING_HEIGHT = 200;
+
+/**
+ * Поднять подвесные светильники, висящие от потолка ниже MIN_HANGING_BOTTOM: подвес укорачивается,
+ * верх остаётся у потолка. Возвращает число изменённых объектов.
+ */
+export function raiseHangingLamps(level: Level): number {
+  let n = 0;
+  for (const it of level.items) {
+    const def = itemDef(it.kind);
+    if (def?.mount !== 'ceiling' || typeof it.params.h !== 'number') continue;
+    const h = def.size(it.params).h;
+    const hungFromCeiling = Math.abs(it.z + h - level.height) <= 60;
+    const fit = level.height - MIN_HANGING_BOTTOM;
+    if (!hungFromCeiling || it.z >= MIN_HANGING_BOTTOM || fit < MIN_HANGING_HEIGHT) continue;
+    it.params = { ...it.params, h: fit };
+    it.z = MIN_HANGING_BOTTOM;
+    n++;
+  }
+  return n;
+}
+
 export function makeItem(kind: string, pos: Vec2, rot = 0, level?: Level, params: Item['params'] = {}): Item {
   const def = itemDef(kind);
   const merged = { ...(def?.defaults ?? {}), ...params };
   let z = def?.z ?? 0;
   if (def?.mount === 'ceiling' && level) {
-    const h = def.size(merged).h;
+    let h = def.size(merged).h;
+    // подвес не должен висеть ниже 2,1 м от пола: длина подвеса укорачивается под высоту потолка
+    if (typeof merged.h === 'number' && params.h === undefined && level.height - h < MIN_HANGING_BOTTOM) {
+      const fit = level.height - MIN_HANGING_BOTTOM;
+      if (fit >= MIN_HANGING_HEIGHT) {
+        merged.h = fit;
+        h = def.size(merged).h;
+      }
+    }
     z = Math.max(0, level.height - h);
   }
   return { id: newId('it'), kind, x: Math.round(pos.x), y: Math.round(pos.y), rot, z, params: merged };

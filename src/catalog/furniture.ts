@@ -463,11 +463,11 @@ const defs: ItemDef[] = [
     C(s.w / 2, s.d / 2, 0, s.w / 2, s.h - 15, c, 'light'),
     C(s.w / 2, s.d / 2, s.h - 15, s.w / 2 - 20, 15, WHITE),
   ], { mount: 'ceiling', z: 2500 }),
-  def('lamp-pendant', 'light', ['Люстра / підвіс', 'Люстра / подвес'], 380, 380, 700, '#fff0c8', (_p, s, c) => [
+  def('lamp-pendant', 'light', ['Люстра / підвіс', 'Люстра / подвес'], 380, 380, 500, '#fff0c8', (_p, s, c) => [
     C(s.w / 2, s.d / 2, 0, s.w / 2, 220, c, 'light', 'z', s.w / 4),
     C(s.w / 2, s.d / 2, 220, 4, s.h - 240, DARK),
     C(s.w / 2, s.d / 2, s.h - 20, 50, 20, DARK),
-  ], { mount: 'ceiling', z: 1900 }),
+  ], { mount: 'ceiling', z: 2100 }),
   def('lamp-spot', 'light', ['Світильник точковий', 'Светильник точечный'], 90, 90, 20, '#fff6dc', (_p, s, c) => [C(s.w / 2, s.d / 2, 0, s.w / 2, s.h, c, 'light')], { mount: 'ceiling', z: 2580 }),
   def('lamp-floor', 'light', ['Торшер', 'Торшер'], 400, 400, 1600, '#fff0c8', (_p, s, c) => [
     C(s.w / 2, s.d / 2, 0, 130, 25, DARK),

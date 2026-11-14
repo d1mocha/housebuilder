@@ -6,11 +6,14 @@ import { count, countNoun, plural } from '../src/i18n';
 import { convexOverlap, itemsFlushToWall, itemsInWalls, openingsOutOfWall, orphanItems } from '../src/model/checks';
 import { createProject, createWall, roomDefaults } from '../src/model/defaults';
 import { createDemoProject } from '../src/model/demo';
-import { keepOpenings, makeItem, moveEntities, moveNode, removeEntity, translateWall, translateWalls } from '../src/model/ops';
+import { MIN_HANGING_BOTTOM, keepOpenings, makeItem, moveEntities, moveNode, raiseHangingLamps, removeEntity, translateWall, translateWalls } from '../src/model/ops';
 import { migrateProject } from '../src/model/migrate';
 import type { Finish, Level, Opening, Project, Sel } from '../src/model/types';
 import { syncRooms } from '../src/model/walls';
 import { validateProject } from '../src/rules/validate';
+import { EYE, START_RADIUS, START_VIEW, viewFree, walkObstacles, walkStart } from '../src/view3d/walk';
+import { centroid, distToSegment, pointInPolygon } from '../src/model/geometry';
+import { itemDef } from '../src/catalog/registry';
 
 const absCenter = (l: Level, o: Opening) => {
   const w = l.walls.find((x) => x.id === o.wallId)!;
@@ -245,5 +248,112 @@ describe('3. товар из магазина: пустые черновики �
     expect(ids).not.toContain('empty-unused');
     expect(ids).toContain('empty-used');
     expect(ids).toContain('filled');
+  });
+});
+
+describe('4. прогулка: старт в свободной точке, подвесные светильники не ниже 2,1 м', () => {
+  const distToPoly = (p: { x: number; y: number }, poly: { x: number; y: number }[]) => (pointInPolygon(p, poly) ? 0 : Math.min(...poly.map((a, i) => distToSegment(p, a, poly[(i + 1) % poly.length]))));
+  it('высота глаз 1,6 м', () => {
+    expect(EYE).toBe(1600);
+  });
+  it('демо: в радиусе 0,6 м и в поле зрения на 1,5 м нет объектов, включая подвесы', () => {
+    const l = createDemoProject().levels[0];
+    const obs = walkObstacles(l);
+    const st = walkStart(l, obs);
+    expect(st.ok).toBe(true);
+    const room = l.rooms.find((r) => pointInPolygon(st.pos, r.polygon))!;
+    expect(room).toBeTruthy();
+    expect(Math.min(...obs.map((o) => distToPoly(st.pos, o)))).toBeGreaterThanOrEqual(START_RADIUS);
+    expect(st.clearance).toBeGreaterThanOrEqual(START_RADIUS);
+    const v = viewFree(st.pos, st.yaw, obs, room.polygon);
+    expect(v.objects).toBeGreaterThanOrEqual(START_VIEW);
+    expect(st.viewFree).toBeGreaterThanOrEqual(START_VIEW);
+    // самое большое помещение, в котором условия выполнимы
+    expect(room.area).toBe(Math.max(...l.rooms.map((r) => r.area)));
+  });
+  it('подвесной светильник — препятствие для старта; ковёр и плафон у потолка — нет', () => {
+    const l = createDemoProject().levels[0];
+    const count = (kind: string) => l.items.filter((i) => i.kind === kind).length;
+    const obs = walkObstacles(l);
+    const has = (kind: string) => l.items.filter((i) => i.kind === kind).every((it) => obs.some((o) => pointInPolygon({ x: it.x, y: it.y }, o) && Math.abs(centroid(o).x - it.x) < 1 && Math.abs(centroid(o).y - it.y) < 1));
+    expect(count('lamp-pendant')).toBeGreaterThan(0);
+    expect(has('lamp-pendant')).toBe(true);
+    expect(has('sofa')).toBe(true);
+    // ковёр (плоский на полу) и плафоны у самого потолка в препятствия не входят
+    const furn = l.items.filter((i) => (itemDef(i.kind)?.layer ?? 'furniture') === 'furniture');
+    const skipped = furn.filter((i) => i.kind === 'rug' || i.kind === 'lamp-ceiling' || i.kind === 'lamp-spot' || i.kind === 'lamp-led');
+    expect(skipped.length).toBeGreaterThanOrEqual(3);
+    expect(obs.length).toBe(furn.length - skipped.length);
+  });
+  it('комната с люстрой в центре: старт не под люстрой и не лицом к ней вплотную', () => {
+    const p = createProject('apartment', 't');
+    const l = p.levels[0];
+    const c = [
+      { x: 0, y: 0 },
+      { x: 5000, y: 0 },
+      { x: 5000, y: 4000 },
+      { x: 0, y: 4000 },
+    ];
+    for (let i = 0; i < 4; i++) l.walls.push(createWall(c[i], c[(i + 1) % 4], { thickness: 120 }));
+    syncRooms(l, roomDefaults());
+    const lamp = makeItem('lamp-pendant', { x: 2500, y: 2000 }, 0, l);
+    l.items.push(lamp);
+    const obs = walkObstacles(l);
+    expect(obs).toHaveLength(1);
+    const st = walkStart(l, obs);
+    expect(st.ok).toBe(true);
+    expect(distToPoly(st.pos, obs[0])).toBeGreaterThanOrEqual(START_RADIUS);
+    expect(viewFree(st.pos, st.yaw, obs, l.rooms[0].polygon).objects).toBeGreaterThanOrEqual(START_VIEW);
+  });
+  it('тесная комната: условия невыполнимы — берётся лучший вариант, без падения', () => {
+    const p = createProject('apartment', 't');
+    const l = p.levels[0];
+    const c = [
+      { x: 0, y: 0 },
+      { x: 1200, y: 0 },
+      { x: 1200, y: 1500 },
+      { x: 0, y: 1500 },
+    ];
+    for (let i = 0; i < 4; i++) l.walls.push(createWall(c[i], c[(i + 1) % 4], { thickness: 120 }));
+    syncRooms(l, roomDefaults());
+    const st = walkStart(l, []);
+    expect(st.ok).toBe(false);
+    expect(pointInPolygon(st.pos, l.rooms[0].polygon)).toBe(true);
+  });
+  it('новый подвес: низ не ниже 2,1 м, длина подвеса подстраивается под потолок', () => {
+    const l = createDemoProject().levels[0];
+    const a = makeItem('lamp-pendant', { x: 0, y: 0 }, 0, l);
+    expect(l.height).toBe(2600);
+    expect([a.z, a.params.h]).toEqual([2100, 500]);
+    const low = makeItem('lamp-pendant', { x: 0, y: 0 }, 0, { ...l, height: 2500 });
+    expect([low.z, low.params.h]).toEqual([2100, 400]);
+    const high = makeItem('lamp-pendant', { x: 0, y: 0 }, 0, { ...l, height: 3000 });
+    expect([high.z, high.params.h]).toEqual([2500, 500]);
+    // явно заданная длина подвеса уважается
+    const own = makeItem('lamp-pendant', { x: 0, y: 0 }, 0, l, { h: 900 });
+    expect([own.z, own.params.h]).toEqual([1700, 900]);
+    expect(itemDef('lamp-pendant')!.z).toBe(MIN_HANGING_BOTTOM);
+    // все подвесы демо — не ниже 2,1 м
+    expect(l.items.filter((i) => i.kind === 'lamp-pendant').every((i) => i.z >= MIN_HANGING_BOTTOM)).toBe(true);
+  });
+  it('миграция v4 поднимает подвесы старых проектов, остальное не трогает', () => {
+    const old = JSON.parse(JSON.stringify(createDemoProject())) as Project;
+    old.schema = 3;
+    const l = old.levels[0];
+    const lamps = l.items.filter((i) => i.kind === 'lamp-pendant');
+    for (const it of lamps) {
+      it.z = 1900;
+      it.params.h = 700;
+    }
+    const sofaZ = l.items.find((i) => i.kind === 'sofa')!.z;
+    const m = migrateProject(old);
+    const ml = m.levels[0];
+    expect(ml.items.filter((i) => i.kind === 'lamp-pendant').map((i) => [i.z, i.params.h])).toEqual(lamps.map(() => [2100, 500]));
+    expect(ml.items.find((i) => i.kind === 'sofa')!.z).toBe(sofaZ);
+    // подвес, намеренно опущенный не от потолка (z + h ≠ высота), и повторная миграция — без изменений
+    const again = migrateProject(m);
+    expect(again.levels[0].items.filter((i) => i.kind === 'lamp-pendant').map((i) => i.z)).toEqual(lamps.map(() => 2100));
+    const lvl = { ...ml, items: [{ ...ml.items.find((i) => i.kind === 'lamp-pendant')!, z: 1500, params: { w: 380, d: 380, h: 300 } }] };
+    expect(raiseHangingLamps(lvl)).toBe(0);
   });
 });

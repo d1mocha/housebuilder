@@ -9,7 +9,7 @@ import { createWall } from '../src/model/defaults';
 import { createDemoProject } from '../src/model/demo';
 import { centroid, pointInPolygon, rectCorners } from '../src/model/geometry';
 import { wallFacingRot } from '../src/model/walls';
-import { walkStart } from '../src/view3d/walk';
+import { walkObstacles, walkStart } from '../src/view3d/walk';
 
 describe('0.1 демо: мебель внутри помещений', () => {
   const p = createDemoProject();
@@ -71,30 +71,29 @@ describe('0.4 поворот мебели у стены — точное зна�
 describe('0.5 старт прогулки', () => {
   const p = createDemoProject();
   const l = p.levels[0];
-  const obstacles = l.items
-    .filter((it) => (itemDef(it.kind)?.layer ?? 'furniture') === 'furniture')
-    .map((it) => ({ it, s: itemSize(it) }))
-    .filter(({ it, s }) => s.h >= 250 && it.z <= 1700)
-    .map(({ it, s }) => rectCorners({ x: it.x, y: it.y }, s.w, s.d, it.rot));
+  const obstacles = walkObstacles(l);
   const st = walkStart(l, obstacles);
-  const room = [...l.rooms].sort((a, b) => b.area - a.area)[0];
-  it('точка внутри самого большого помещения и не внутри мебели', () => {
-    expect(pointInPolygon(st.pos, room.polygon)).toBe(true);
+  const room = l.rooms.find((r) => pointInPolygon(st.pos, r.polygon))!;
+  it('точка внутри помещения и не внутри мебели', () => {
+    expect(room).toBeTruthy();
     expect(obstacles.some((o) => pointInPolygon(st.pos, o))).toBe(false);
     expect(st.clearance).toBeGreaterThan(350);
   });
-  it('взгляд направлен к центру помещения', () => {
-    const c = centroid(room.polygon);
-    const fwd = { x: -Math.sin(st.yaw), y: -Math.cos(st.yaw) };
-    const to = { x: c.x - st.pos.x, y: c.y - st.pos.y };
-    const len = Math.hypot(to.x, to.y);
-    if (len >= 400) expect((fwd.x * to.x + fwd.y * to.y) / len).toBeGreaterThan(0.99);
-  });
-  it('в пустой комнате — центр, без мебели и стен — без падения', () => {
+  it('в пустой комнате взгляд направлен к центру помещения', () => {
     const q = createDemoProject();
     q.levels[0].items = [];
     const s2 = walkStart(q.levels[0], []);
-    expect(pointInPolygon(s2.pos, room.polygon)).toBe(true);
+    const big = [...q.levels[0].rooms].sort((a, b) => b.area - a.area)[0];
+    expect(pointInPolygon(s2.pos, big.polygon)).toBe(true);
+    const c = centroid(big.polygon);
+    const fwd = { x: -Math.sin(s2.yaw), y: -Math.cos(s2.yaw) };
+    const to = { x: c.x - s2.pos.x, y: c.y - s2.pos.y };
+    const len = Math.hypot(to.x, to.y);
+    if (len >= 400) expect((fwd.x * to.x + fwd.y * to.y) / len).toBeGreaterThan(0.95);
+    expect(s2.ok).toBe(true);
+  });
+  it('без мебели и стен — без падения', () => {
+    const q = createDemoProject();
     expect(walkStart({ ...q.levels[0], rooms: [], walls: [] }, []).pos).toEqual({ x: 0, y: 0 });
   });
 });
