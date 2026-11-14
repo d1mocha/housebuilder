@@ -138,8 +138,8 @@ export function roomFillPrim(room: Room, color: string): Prim2 {
   return poly(room.polygon, true, { fill: color, stroke: 'none', opacity: 0.35 });
 }
 
-export function roomLabelPrims(room: Room, k: number): Prim2[] {
-  const c = room.seed;
+export function roomLabelPrims(room: Room, k: number, at?: Vec2): Prim2[] {
+  const c = at ?? room.seed;
   return [
     text(c.x, c.y - 1.2 * k, room.name, 3, { color: COL.room, bold: true, halo: true }),
     text(c.x, c.y + 3 * k, `${fmtArea(room.area)} м²`, 2.6, { color: COL.room, halo: true }),
@@ -523,8 +523,8 @@ export function openingMarks(openings: Opening[]): { byId: Map<string, string>; 
   return { byId, schedule };
 }
 
-/** Подпись марки у проёма: окно — снаружи здания, дверь — со стороны, противоположной открыванию. */
-export function openingMarkPrims(o: Opening, wall: Wall, mark: string, k: number, center: Vec2): Prim2[] {
+/** Точка марки у проёма: окно — снаружи здания, дверь — со стороны, противоположной открыванию. */
+export function openingMarkPos(o: Opening, wall: Wall, k: number, center: Vec2): Vec2 {
   const g = openingGeom(o, wall);
   let side = o.kind === 'door' ? (o.swing === 'L' ? -1 : 1) : 1;
   if (o.kind !== 'door') {
@@ -532,6 +532,11 @@ export function openingMarkPrims(o: Opening, wall: Wall, mark: string, k: number
     const toCenter = (center.x - g.center.x) * g.normal.x + (center.y - g.center.y) * g.normal.y;
     side = toCenter > 0 ? -1 : 1;
   }
-  const p = add(g.center, mul(g.normal, side * (wall.thickness / 2 + 3.2 * k)));
+  return add(g.center, mul(g.normal, side * (wall.thickness / 2 + 3.2 * k)));
+}
+
+/** Подпись марки у проёма (at — положение после разведения марок, иначе — у проёма). */
+export function openingMarkPrims(o: Opening, wall: Wall, mark: string, k: number, center: Vec2, at?: Vec2): Prim2[] {
+  const p = at ?? openingMarkPos(o, wall, k, center);
   return [circle(p.x, p.y, 2.6 * k, { stroke: '#111827', w: 0.18, fill: '#ffffff' }), text(p.x, p.y, mark, 1.9, { bold: true })];
 }

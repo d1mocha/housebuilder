@@ -173,6 +173,31 @@ const fs = require('fs');
   await page.click('[data-view="2d"]');
   await page.waitForTimeout(300);
 
+  // ── 5. чертежи: масштаб «Авто» и подписи ──
+  await page.click('.topbar >> text=Креслення');
+  await page.waitForSelector('.dialog .sheet-preview svg, .dialog svg', { timeout: 10000 });
+  await page.waitForTimeout(500);
+  const dlgText = await page.textContent('.dialog');
+  check('5 обмерный план демо на A3: «Авто» выбирает 1:50', /1:50 · A3/.test(dlgText), (dlgText.match(/[^·]{0,30}· 1:\d+ · A\d/) || [''])[0]);
+  const scaleOpts = await page.locator('.dialog label.field', { hasText: 'Масштаб' }).locator('option').allInnerTexts();
+  check('5 в списке масштабов есть «Авто», 1:50, 1:75, 1:100', ['Авто', '1:50', '1:75', '1:100'].every((o) => scaleOpts.includes(o)), scaleOpts.join(' '));
+  // подписи помещений и марки проёмов на листе не перекрываются (по фактическим габаритам текста в SVG)
+  const clash = await page.evaluate(() => {
+    const svg = document.querySelector('.dialog svg');
+    const rooms = window.__hb.useProject.getState().project.levels[0].rooms.map((r) => r.name);
+    const texts = [...svg.querySelectorAll('text')];
+    const labels = texts.filter((t) => rooms.includes(t.textContent.trim())).map((t) => t.getBoundingClientRect());
+    const marks = texts.filter((t) => /^(В|Д|ПР)-\d+$/.test(t.textContent.trim())).map((t) => t.getBoundingClientRect());
+    const hit = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    let n = 0;
+    for (const a of labels) for (const b of marks) if (hit(a, b)) n++;
+    for (let i = 0; i < labels.length; i++) for (let j = i + 1; j < labels.length; j++) if (hit(labels[i], labels[j])) n++;
+    return { labels: labels.length, marks: marks.length, n };
+  });
+  check('5 на обмерном плане марки проёмов и подписи комнат не перекрываются', clash.labels === 6 && clash.marks >= 9 && clash.n === 0, JSON.stringify(clash));
+  await page.screenshot({ path: path.join(out, '55-drawing-auto.png') });
+  await page.click('.dialog footer >> text=Закрити');
+
   check('нет ошибок в консоли', errors.length === 0, errors.slice(0, 5).join(' | '));
   await browser.close();
 })().catch((e) => {

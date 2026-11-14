@@ -11,6 +11,12 @@ import { migrateProject } from '../src/model/migrate';
 import type { Finish, Level, Opening, Project, Sel } from '../src/model/types';
 import { syncRooms } from '../src/model/walls';
 import { validateProject } from '../src/rules/validate';
+import { openingMarkPos, openingMarks } from '../src/draw2d/plan';
+import { primsBBox } from '../src/draw2d/prims';
+import { boxesOverlap, layoutMarks, layoutRoomLabels, markBox, roomLabelBox } from '../src/drawings/labels';
+import type { Box } from '../src/drawings/labels';
+import { PLAN_AUTO_SCALES, autoScales, buildSheet } from '../src/drawings/sheet';
+import { geomOf, wallDir } from '../src/model/walls';
 import { EYE, START_RADIUS, START_VIEW, viewFree, walkObstacles, walkStart } from '../src/view3d/walk';
 import { centroid, distToSegment, pointInPolygon } from '../src/model/geometry';
 import { itemDef } from '../src/catalog/registry';
@@ -355,5 +361,140 @@ describe('4. прогулка: старт в свободной точке, по
     expect(again.levels[0].items.filter((i) => i.kind === 'lamp-pendant').map((i) => i.z)).toEqual(lamps.map(() => 2100));
     const lvl = { ...ml, items: [{ ...ml.items.find((i) => i.kind === 'lamp-pendant')!, z: 1500, params: { w: 380, d: 380, h: 300 } }] };
     expect(raiseHangingLamps(lvl)).toBe(0);
+  });
+});
+
+describe('5. чертежи: марки проёмов и подписи помещений не перекрываются', () => {
+  /** Раскладка подписей обмерного плана так же, как её делает лист. */
+  const layout = (l: Level, N: number) => {
+    const gm = geomOf(l);
+    const marks = openingMarks(l.openings);
+    const pts = gm.walls.flatMap((w) => [w.a, w.b]);
+    const c = { x: pts.reduce((s, q) => s + q.x, 0) / pts.length, y: pts.reduce((s, q) => s + q.y, 0) / pts.length };
+    const list = gm.openings.flatMap((o) => {
+      const w = gm.walls.find((x) => x.id === o.wallId);
+      return w && marks.byId.get(o.id) ? [{ id: o.id, p: openingMarkPos(o, w, N, c), dir: wallDir(w) }] : [];
+    });
+    const placed = layoutMarks(list, N);
+    const markBoxes = list.map((m) => markBox(placed.get(m.id)!, N));
+    const naive = list.map((m) => markBox(m.p, N));
+    const at = layoutRoomLabels(l.rooms, N, markBoxes);
+    const labelBoxes = l.rooms.map((r) => roomLabelBox(r, N, at.get(r.id)!));
+    const naiveLabels = l.rooms.map((r) => roomLabelBox(r, N, r.seed));
+    return { markBoxes, labelBoxes, naive, naiveLabels, at };
+  };
+  const overlaps = (a: Box[], b: Box[], same = false) => {
+    let n = 0;
+    for (let i = 0; i < a.length; i++) for (let j = same ? i + 1 : 0; j < b.length; j++) if (boxesOverlap(a[i], b[j])) n++;
+    return n;
+  };
+  it('демо, масштабы 1:50, 1:75, 1:100: ни одна подпись не задевает марку или другую подпись', () => {
+    const l = createDemoProject().levels[0];
+    for (const N of [50, 75, 100]) {
+      const r = layout(l, N);
+      expect(r.markBoxes.length).toBe(l.openings.length);
+      expect(overlaps(r.labelBoxes, r.markBoxes), `подписи × марки, 1:${N}`).toBe(0);
+      expect(overlaps(r.labelBoxes, r.labelBoxes, true), `подписи × подписи, 1:${N}`).toBe(0);
+      expect(overlaps(r.markBoxes, r.markBoxes, true), `марки × марки, 1:${N}`).toBe(0);
+    }
+  });
+  it('подпись, на которую попадает марка двери, сдвигается внутри своего помещения', () => {
+    const p = createProject('apartment', 't');
+    const l = p.levels[0];
+    const c = [
+      { x: 0, y: 0 },
+      { x: 3000, y: 0 },
+      { x: 3000, y: 2400 },
+      { x: 0, y: 2400 },
+    ];
+    for (let i = 0; i < 4; i++) l.walls.push(createWall(c[i], c[(i + 1) % 4], { thickness: 120 }));
+    syncRooms(l, roomDefaults());
+    const room = l.rooms[0];
+    const N = 100;
+    // марка стоит прямо на точке привязки подписи
+    const obstacle = markBox(room.seed, N);
+    expect(boxesOverlap(roomLabelBox(room, N, room.seed), obstacle)).toBe(true);
+    const at = layoutRoomLabels(l.rooms, N, [obstacle]).get(room.id)!;
+    expect(at).not.toEqual(room.seed);
+    const box = roomLabelBox(room, N, at);
+    expect(boxesOverlap(box, obstacle)).toBe(false);
+    for (const q of [
+      { x: box.minX, y: box.minY },
+      { x: box.maxX, y: box.maxY },
+    ])
+      expect(pointInPolygon(q, room.polygon)).toBe(true);
+    // без помех подпись остаётся в точке привязки
+    expect(layoutRoomLabels(l.rooms, N, []).get(room.id)).toEqual(room.seed);
+  });
+  it('две марки в одной точке разводятся вдоль стены', () => {
+    const N = 100;
+    const placed = layoutMarks(
+      [
+        { id: 'a', p: { x: 1000, y: 0 }, dir: { x: 1, y: 0 } },
+        { id: 'b', p: { x: 1100, y: 0 }, dir: { x: 1, y: 0 } },
+      ],
+      N,
+    );
+    expect(placed.get('a')).toEqual({ x: 1000, y: 0 });
+    expect(placed.get('b')!.y).toBe(0);
+    expect(boxesOverlap(markBox(placed.get('a')!, N), markBox(placed.get('b')!, N))).toBe(false);
+  });
+  it('на листе подписи помещений стоят там, где их поставила раскладка', () => {
+    const p = createDemoProject();
+    const l = p.levels[0];
+    const sheet = buildSheet(p, { kind: 'measure', levelId: l.id, paper: 'A3', landscape: true, scale: 100 });
+    const names = sheet.prims.filter((q) => q.t === 'text' && l.rooms.some((r) => r.name === q.text));
+    expect(names).toHaveLength(l.rooms.length);
+  });
+});
+
+describe('5. чертежи: масштаб «Авто» — наибольший из 1:50, 1:75, 1:100, при котором план помещается', () => {
+  const box = (w: number, d: number) => {
+    const p = createProject('apartment', 't');
+    const l = p.levels[0];
+    const c = [
+      { x: 0, y: 0 },
+      { x: w, y: 0 },
+      { x: w, y: d },
+      { x: 0, y: d },
+    ];
+    for (let i = 0; i < 4; i++) l.walls.push(createWall(c[i], c[(i + 1) % 4], { thickness: 200 }));
+    syncRooms(l, roomDefaults());
+    return p;
+  };
+  const auto = (p: Project, paper: 'A4' | 'A3', kind: 'measure' | 'furniture' = 'measure') => buildSheet(p, { kind, levelId: p.levels[0].id, paper, landscape: true, scale: 0 });
+  it('кандидаты для планов: 1:50, 1:75, 1:100, затем мельче; для развёрток доступны и крупные масштабы', () => {
+    expect(PLAN_AUTO_SCALES).toEqual([50, 75, 100]);
+    expect(autoScales('measure').slice(0, 4)).toEqual([50, 75, 100, 150]);
+    expect(autoScales('furniture')[0]).toBe(50);
+    expect(autoScales('elevations')[0]).toBe(10);
+  });
+  it('демо-квартира 9×6,8 м: A3 — 1:50; маленькая комната не чертится крупнее 1:50', () => {
+    expect(auto(createDemoProject(), 'A3').scale).toBe(50);
+    expect(auto(box(3000, 2500), 'A3').scale).toBe(50);
+    expect(auto(box(3000, 2500), 'A4').scale).toBe(50);
+  });
+  it('чем больше план, тем мельче масштаб: 1:50 → 1:75 → 1:100 → 1:150', () => {
+    const scales = [9000, 20000, 30000, 40000].map((w) => auto(box(w, w * 0.6), 'A3', 'furniture').scale);
+    expect(scales).toEqual([50, 75, 100, 150]);
+  });
+  it('выбранный масштаб действительно самый крупный из подходящих: план помещается, а на шаг крупнее — уже нет', () => {
+    const p = box(20000, 12000);
+    const s = auto(p, 'A3', 'furniture');
+    expect(s.scale).toBe(75);
+    const area = { w: s.w - 35 - 16, h: s.h - 20 - 16 };
+    const content = (N: number) => {
+      const sh = buildSheet(p, { kind: 'furniture', levelId: p.levels[0].id, paper: 'A3', landscape: true, scale: N });
+      // содержимое плана — всё, что нарисовано стенами (тёмная заливка), в мм бумаги
+      const bb = primsBBox(sh.prims.filter((q) => q.t === 'path'));
+      return { w: bb.maxX - bb.minX, h: bb.maxY - bb.minY };
+    };
+    expect(content(75).w).toBeLessThanOrEqual(area.w);
+    expect(content(50).w).toBeGreaterThan(area.w);
+  });
+  it('заданный вручную масштаб не меняется', () => {
+    const p = createDemoProject();
+    expect(buildSheet(p, { kind: 'measure', levelId: p.levels[0].id, paper: 'A3', landscape: true, scale: 100 }).scale).toBe(100);
+    expect(buildSheet(p, { kind: 'measure', levelId: p.levels[0].id, paper: 'A3', landscape: true, scale: 200 }).scale).toBe(200);
   });
 });
