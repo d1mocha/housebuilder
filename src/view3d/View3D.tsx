@@ -15,6 +15,7 @@ import { selectWithMode } from '../store/actions';
 import { useProject } from '../store/projectStore';
 import { useUi } from '../store/uiStore';
 import { buildFloors, buildItemObject, buildRoof, buildRouteObject, buildSiteGround, buildWalls, buildZoneObject, collisionSegments, terrainHeight } from './build';
+import { Invalidator } from './Invalidator';
 import { loadCustomModel } from './models';
 import { resolveCollisions, walkStart } from './walk';
 
@@ -393,6 +394,24 @@ function Scene() {
     w.__hbGl = () => ({ calls: gl.info.render.calls, triangles: gl.info.render.triangles, geometries: gl.info.memory.geometries, textures: gl.info.memory.textures });
     return () => void delete w.__hbGl;
   }, [gl]);
+  const scene = useThree((s) => s.scene);
+  useEffect(() => {
+    // отладочный доступ к материалам отделки в сцене (e2e: какая отделка и текстура на каких поверхностях)
+    const w = window as unknown as Record<string, unknown>;
+    w.__hbMats = () => {
+      const out: { sel: Sel | null; finishId: string; textureId: string | null; textured: boolean; hasMap: boolean; hasNormal: boolean }[] = [];
+      scene.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+          const sm = m as THREE.MeshStandardMaterial;
+          if (sm.userData?.finishId) out.push({ sel: (mesh.userData.sel as Sel) ?? null, finishId: sm.userData.finishId, textureId: sm.userData.textureId ?? null, textured: !!sm.userData.textured, hasMap: !!sm.map, hasNormal: !!sm.normalMap });
+        }
+      });
+      return out;
+    };
+    return () => void delete w.__hbMats;
+  }, [scene]);
   const project = useProject((s) => s.project);
   const activeLevelId = useUi((s) => s.activeLevelId);
   const walk = useUi((s) => s.walk);
@@ -434,6 +453,7 @@ export function View3D() {
     <div className="view3d">
       <Canvas shadows={sunOn} frameloop={walk ? 'always' : 'demand'} camera={{ fov: walk ? 70 : 50, near: 0.05, far: 400, position: [8, 10, 10] }} dpr={[1, 1.75]} gl={{ antialias: true, preserveDrawingBuffer: true }}>
         <Scene />
+        <Invalidator />
       </Canvas>
       <div className="view3d-bar">
         <button className={walk ? 'active' : ''} onClick={() => useUi.getState().setWalk(!walk)} title="F">

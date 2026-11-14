@@ -12,6 +12,8 @@ export interface BoardMaterial {
   /** Есть направление текстуры (детали нельзя поворачивать при раскрое). */
   grain: boolean;
   color: string;
+  /** Декор: текстура из библиотеки (волокна идут вдоль длины листа). */
+  textureId?: string;
 }
 
 export interface EdgeBand {

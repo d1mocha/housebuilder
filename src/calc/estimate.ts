@@ -8,11 +8,12 @@ import { itemDef, num, routeDef } from '../catalog/registry';
 import type { Finish, Level, LS, Project } from '../model/types';
 import { roomSurfaces, surfaceNetArea, wallLen } from '../model/walls';
 import { ruleValue } from '../rules';
+import { LINOLEUM_ROLL_W, WALLPAPER_ROLL_L, WALLPAPER_ROLL_W, linoleumCalc, wallpaperCalc } from './materials';
 import { networkSummary } from './networks';
-import { isTiled, tileLayout, tileLayoutRect } from './tiles';
+import { isTileType, isTiled, tileLayout, tileLayoutRect } from './tiles';
 import { underfloorCalc } from './underfloor';
 
-export type EstimateCategory = 'demolition' | 'walls' | 'insulation' | 'plaster' | 'gkl' | 'paint' | 'tile' | 'flooring' | 'ceiling' | 'cable' | 'pipes' | 'devices' | 'furniture';
+export type EstimateCategory = 'demolition' | 'walls' | 'insulation' | 'plaster' | 'gkl' | 'paint' | 'wallpaper' | 'tile' | 'flooring' | 'ceiling' | 'cable' | 'pipes' | 'devices' | 'furniture';
 
 export const CATEGORY_NAMES: Record<EstimateCategory, LS> = {
   demolition: { uk: 'Демонтаж', ru: 'Демонтаж' },
@@ -20,7 +21,8 @@ export const CATEGORY_NAMES: Record<EstimateCategory, LS> = {
   insulation: { uk: 'Утеплення', ru: 'Утепление' },
   plaster: { uk: 'Штукатурка', ru: 'Штукатурка' },
   gkl: { uk: 'Гіпсокартон і профіль', ru: 'Гипсокартон и профиль' },
-  paint: { uk: 'Фарбування та шпалери', ru: 'Покраска и обои' },
+  paint: { uk: 'Фарбування', ru: 'Покраска' },
+  wallpaper: { uk: 'Шпалери', ru: 'Обои' },
   tile: { uk: 'Плитка та панелі', ru: 'Плитка и панели' },
   flooring: { uk: 'Підлогові покриття', ru: 'Напольные покрытия' },
   ceiling: { uk: 'Стелі', ru: 'Потолки' },
@@ -37,6 +39,7 @@ export const DEFAULT_RESERVE: Record<EstimateCategory, number> = {
   plaster: 10,
   gkl: 10,
   paint: 10,
+  wallpaper: 5,
   tile: 10,
   flooring: 7,
   ceiling: 5,
@@ -57,6 +60,10 @@ export interface EstimateLine {
   /** К закупке (с запасом, округлено вверх до разумной единицы). */
   total: number;
   price: number;
+  /** Откуда цена: введена в смете, взята из материала или не задана. */
+  priceFrom: 'user' | 'material' | null;
+  /** Ссылка на товар в магазине (из материала). */
+  url?: string;
   sum: number;
   note?: LS;
 }
@@ -77,7 +84,6 @@ const U = {
 /** Утеплитель наружных стен по умолчанию, мм. */
 export const INSULATION_THICKNESS = 100;
 const GKL_SHEET_M2 = 3; // 1200×2500
-const WALLPAPER_ROLL_M2 = 5.3; // 0,53×10,05
 const BRICKS_PER_M3 = 394; // одинарный кирпич с растворными швами — ориентировочно
 const MORTAR_PER_M3 = 0.23; // м³ раствора на м³ кладки — ориентировочно
 const AERATED_GLUE_KG_PER_M3 = 25; // ориентировочно
@@ -90,6 +96,10 @@ interface Acc {
   /** Округление итога: 'int' — вверх до целого, 'dec' — до 0,1. */
   round: 'int' | 'dec';
   note?: LS;
+  /** Цена из материала (если пользователь не задал свою в смете). */
+  price?: number;
+  /** Ссылка на товар в магазине. */
+  url?: string;
 }
 
 /** Площадь стены нетто (за вычетом проёмов), мм². */
@@ -107,12 +117,15 @@ export function wallNetArea(level: Level, wallId: string): number {
 
 export function buildEstimate(p: Project): EstimateLine[] {
   const acc = new Map<string, Acc>();
-  const add = (key: string, category: EstimateCategory, name: LS, unit: LS, qty: number, round: 'int' | 'dec' = 'dec', note?: LS) => {
+  const add = (key: string, category: EstimateCategory, name: LS, unit: LS, qty: number, round: 'int' | 'dec' = 'dec', note?: LS, mat?: { price?: number; url?: string }) => {
     if (!(qty > 0)) return;
     const e = acc.get(key);
     if (e) e.qty += qty;
-    else acc.set(key, { category, name, unit, qty, round, note });
+    else acc.set(key, { category, name, unit, qty, round, note, price: mat?.price, url: mat?.url });
   };
+  /** Цена и ссылка материала; k — пересчёт цены за единицу материала в цену за единицу строки. */
+  const matOf = (f: Finish, k = 1) => ({ price: f.price && f.price > 0 ? Math.round(f.price * k * 100) / 100 : undefined, url: f.shopUrl || undefined });
+  const m3 = (v: number) => String(Math.round(v) / 1000).replace('.', ',');
   const fin = (id: string | null | undefined): Finish | undefined => p.finishes.find((f) => f.id === id);
   const ROUGH = L('орієнтовна норма витрати', 'ориентировочная норма расхода');
 
@@ -171,6 +184,8 @@ export function buildEstimate(p: Project): EstimateLine[] {
 
     // ── Отделка стен, полов, потолков по помещениям ──
     for (const r of lvl.rooms) {
+      /** Обои: длины оклеиваемых участков помещения по видам обоев (дверные проёмы вычтены). */
+      const paperRuns = new Map<string, number>();
       for (const s of roomSurfaces(lvl, r)) {
         const f = fin(s.finishId);
         if (!f) continue;
@@ -178,33 +193,85 @@ export function buildEstimate(p: Project): EstimateLine[] {
         if (isTiled(f)) {
           const res = tileLayoutRect(s.length, lvl.height, s.openings.map((o) => ({ minX: o.from, maxX: o.to, minY: lvl.height - o.sill - o.height, maxY: lvl.height - o.sill })), f, 0);
           add(`tile.${f.id}`, 'tile', L(`${f.name.uk} (стіни)`, `${f.name.ru} (стены)`), U.pcs, res.total, 'int');
-          add(`tile.${f.id}.m2`, 'tile', L(`${f.name.uk} — площа`, `${f.name.ru} — площадь`), U.m2, areaM2, 'dec');
+          add(`tile.${f.id}.m2`, 'tile', L(`${f.name.uk} — площа`, `${f.name.ru} — площадь`), U.m2, areaM2, 'dec', f.packArea ? L(`упаковка ${f.packArea} м²`, `упаковка ${f.packArea} м²`) : undefined, matOf(f));
         } else if (f.type === 'plaster') {
           add(`plaster.${f.id}`, 'plaster', f.name, U.m2, areaM2, 'dec');
-          add(`plaster.${f.id}.kg`, 'plaster', L(`${f.name.uk} — суміш`, `${f.name.ru} — смесь`), U.kg, areaM2 * (f.consumption ?? 9) * ((f.thickness ?? 10) / 10), 'int', ROUGH);
+          add(`plaster.${f.id}.kg`, 'plaster', L(`${f.name.uk} — суміш`, `${f.name.ru} — смесь`), U.kg, areaM2 * (f.consumption ?? 9) * ((f.thickness ?? 10) / 10), 'int', ROUGH, matOf(f));
         } else if (f.type === 'paint') {
-          add(`paint.${f.id}`, 'paint', L(`${f.name.uk} (2 шари)`, `${f.name.ru} (2 слоя)`), U.l, areaM2 * (f.consumption ?? 0.25) * 2, 'dec', ROUGH);
+          add(`paint.${f.id}`, 'paint', L(`${f.name.uk} (2 шари)`, `${f.name.ru} (2 слоя)`), U.l, areaM2 * (f.consumption ?? 0.25) * 2, 'dec', ROUGH, matOf(f));
           add('paint.area', 'paint', L('Площа фарбування стін', 'Площадь покраски стен'), U.m2, areaM2, 'dec');
         } else if (f.type === 'wallpaper') {
-          add(`paint.${f.id}`, 'paint', f.name, U.roll, areaM2 / WALLPAPER_ROLL_M2, 'int');
+          // полотна не нужны там, где дверь или проём от пола на всю высоту полотна
+          const doors = s.openings.filter((o) => o.sill <= 0 && o.height >= 1900).reduce((a, o) => a + (o.to - o.from), 0);
+          paperRuns.set(f.id, (paperRuns.get(f.id) ?? 0) + Math.max(0, s.length - doors));
+          add(`wallpaper.${f.id}.m2`, 'wallpaper', L(`${f.name.uk} — площа обклеювання`, `${f.name.ru} — площадь оклейки`), U.m2, areaM2, 'dec');
         } else if (f.type === 'gkl') {
           add('gkl.sheet', 'gkl', L('Гіпсокартон 12,5 мм 1200×2500', 'Гипсокартон 12,5 мм 1200×2500'), U.sheet, areaM2 / GKL_SHEET_M2, 'int');
           add('gkl.cd', 'gkl', L('Профіль CD (обшивка)', 'Профиль CD (обшивка)'), U.m, (Math.ceil(s.length / 600) + 1) * (lvl.height / 1000), 'int');
+        } else {
+          add(`finish.${f.id}`, 'tile', L(`${f.name.uk} (стіни)`, `${f.name.ru} (стены)`), U.m2, areaM2, 'dec', undefined, matOf(f));
         }
+      }
+      for (const [id, run] of paperRuns) {
+        const f = fin(id)!;
+        const c = wallpaperCalc([run], lvl.height, f);
+        const rollW = f.rollW ?? WALLPAPER_ROLL_W;
+        const rollL = f.rollL ?? WALLPAPER_ROLL_L;
+        // количество — в долях рулона (полотна / полотен в рулоне): остатки рулона идут в соседнее помещение
+        add(
+          `wallpaper.${f.id}`,
+          'wallpaper',
+          f.name,
+          U.roll,
+          c.strips / c.perRoll,
+          'int',
+          L(
+            `рулон ${m3(rollW)}×${m3(rollL)} м; полотно ${m3(c.stripLen)} м${f.rapport ? `, рапорт ${f.rapport} мм` : ''}; ${c.perRoll} полотен з рулону${c.tooShort ? ' — рулон коротший за полотно!' : ''}`,
+            `рулон ${m3(rollW)}×${m3(rollL)} м; полотно ${m3(c.stripLen)} м${f.rapport ? `, раппорт ${f.rapport} мм` : ''}; ${c.perRoll} полотен из рулона${c.tooShort ? ' — рулон короче полотна!' : ''}`,
+          ),
+          matOf(f),
+        );
       }
       const floor = fin(r.floorFinish);
       if (floor) {
-        if (isTiled(floor)) {
+        const plank = floor.type === 'laminate' || floor.type === 'parquet';
+        if (floor.type === 'linoleum' || floor.type === 'carpet') {
+          const rollW = floor.rollW ?? LINOLEUM_ROLL_W;
+          const c = linoleumCalc(r.polygon, rollW);
+          add(
+            `flooring.${floor.id}`,
+            'flooring',
+            L(`${floor.name.uk} — погонні метри рулону ${m3(rollW)} м`, `${floor.name.ru} — погонные метры рулона ${m3(rollW)} м`),
+            U.m,
+            c.lengthM,
+            'dec',
+            L('полотна на всю довжину приміщення + 100 мм на підрізку', 'полотна на всю длину помещения + 100 мм на подрезку'),
+            matOf(floor, rollW / 1000),
+          );
+          add(`flooring.${floor.id}.m2`, 'flooring', L(`${floor.name.uk} — площа підлоги`, `${floor.name.ru} — площадь пола`), U.m2, r.area, 'dec');
+        } else if (plank && (floor.packArea ?? 0) > 0) {
+          add(
+            `flooring.${floor.id}.pack`,
+            'flooring',
+            L(`${floor.name.uk} — упаковки по ${String(floor.packArea).replace('.', ',')} м²`, `${floor.name.ru} — упаковки по ${String(floor.packArea).replace('.', ',')} м²`),
+            U.pack,
+            r.area / floor.packArea!,
+            'int',
+            undefined,
+            matOf(floor, floor.packArea),
+          );
+          add(`flooring.${floor.id}.m2`, 'flooring', L(`${floor.name.uk} — площа підлоги`, `${floor.name.ru} — площадь пола`), U.m2, r.area, 'dec');
+        } else if (isTiled(floor)) {
           const res = tileLayout(r.polygon, [], floor.tileW!, floor.tileH!, floor.grout ?? 0, floor.pattern, 0);
-          const cat: EstimateCategory = floor.type === 'tile' ? 'tile' : 'flooring';
-          if (floor.type === 'tile') add(`tile.${floor.id}`, cat, L(`${floor.name.uk} (підлога)`, `${floor.name.ru} (пол)`), U.pcs, res.total, 'int');
-          add(`${cat}.${floor.id}.m2`, cat, L(`${floor.name.uk} — площа`, `${floor.name.ru} — площадь`), U.m2, r.area, 'dec', floor.packArea ? L(`упаковка ${floor.packArea} м²`, `упаковка ${floor.packArea} м²`) : undefined);
-        } else add(`flooring.${floor.id}`, 'flooring', floor.name, U.m2, r.area, 'dec');
+          const cat: EstimateCategory = isTileType(floor.type) ? 'tile' : 'flooring';
+          if (isTileType(floor.type)) add(`tile.${floor.id}`, cat, L(`${floor.name.uk} (підлога)`, `${floor.name.ru} (пол)`), U.pcs, res.total, 'int');
+          add(`${cat}.${floor.id}.m2`, cat, L(`${floor.name.uk} — площа`, `${floor.name.ru} — площадь`), U.m2, r.area, 'dec', floor.packArea ? L(`упаковка ${floor.packArea} м²`, `упаковка ${floor.packArea} м²`) : undefined, matOf(floor));
+        } else add(`flooring.${floor.id}`, 'flooring', floor.name, U.m2, r.area, 'dec', undefined, matOf(floor));
       }
       const ceil = fin(r.ceilingFinish);
       if (ceil) {
-        if (ceil.type === 'paint') add(`ceiling.${ceil.id}`, 'ceiling', L(`${ceil.name.uk} (2 шари)`, `${ceil.name.ru} (2 слоя)`), U.l, r.area * (ceil.consumption ?? 0.25) * 2, 'dec', ROUGH);
-        add(`ceiling.${ceil.id}.m2`, 'ceiling', L(`${ceil.name.uk} — площа`, `${ceil.name.ru} — площадь`), U.m2, r.area, 'dec');
+        if (ceil.type === 'paint') add(`ceiling.${ceil.id}`, 'ceiling', L(`${ceil.name.uk} (2 шари)`, `${ceil.name.ru} (2 слоя)`), U.l, r.area * (ceil.consumption ?? 0.25) * 2, 'dec', ROUGH, matOf(ceil));
+        add(`ceiling.${ceil.id}.m2`, 'ceiling', L(`${ceil.name.uk} — площа`, `${ceil.name.ru} — площадь`), U.m2, r.area, 'dec', undefined, ceil.type === 'paint' ? undefined : matOf(ceil));
       }
     }
 
@@ -262,8 +329,22 @@ export function buildEstimate(p: Project): EstimateLine[] {
     const reservePct = p.reserves[a.category] ?? DEFAULT_RESERVE[a.category];
     const raw = a.qty * (1 + reservePct / 100);
     const total = a.round === 'int' ? Math.ceil(raw - 1e-9) : Math.ceil(raw * 10 - 1e-9) / 10;
-    const price = p.prices[key] ?? 0;
-    lines.push({ key, category: a.category, name: a.name, unit: a.unit, qty: Math.round(a.qty * 100) / 100, reservePct, total, price, sum: Math.round(total * price * 100) / 100, note: a.note });
+    const own = p.prices[key];
+    const price = own ?? a.price ?? 0;
+    lines.push({
+      key,
+      category: a.category,
+      name: a.name,
+      unit: a.unit,
+      qty: Math.round(a.qty * 100) / 100,
+      reservePct,
+      total,
+      price,
+      priceFrom: own !== undefined ? 'user' : a.price ? 'material' : null,
+      url: a.url,
+      sum: Math.round(total * price * 100) / 100,
+      note: a.note,
+    });
   }
   const order = Object.keys(CATEGORY_NAMES);
   lines.sort((x, y) => order.indexOf(x.category) - order.indexOf(y.category) || x.key.localeCompare(y.key));

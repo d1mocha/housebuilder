@@ -37,6 +37,21 @@ export function migrateProject(raw: Project): Project {
       walls: l.walls.map((w) => (w.status ? w : { ...w, status: p.kind === 'apartment' && (!p.baseline || baseIds.has(w.id)) ? ('existing' as const) : ('new' as const) })),
     }));
   }
+  if (from < 3) {
+    // v3: библиотека текстур и параметры материалов — стандартные позиции дополняются новыми полями
+    // (текстура, рулон, раппорт, класс), пользовательские значения не затираются; новые позиции добавляются
+    const defs = defaultFinishes();
+    const byId = new Map(defs.map((f) => [f.id, f]));
+    const have = new Set(p.finishes.map((f) => f.id));
+    p.finishes = [...p.finishes.map((f) => (byId.has(f.id) ? { ...byId.get(f.id)!, ...f } : f)), ...defs.filter((f) => !have.has(f.id))];
+    // декоры ЛДСП: текстуры стандартным плитам, новые декоры — в каталог
+    const boards = defaultCabinetCatalog().boards;
+    const haveB = new Set(p.cabinetCatalog.boards.map((b) => b.id));
+    p.cabinetCatalog = {
+      ...p.cabinetCatalog,
+      boards: [...p.cabinetCatalog.boards.map((b) => ({ ...b, textureId: b.textureId ?? boards.find((x) => x.id === b.id)?.textureId })), ...boards.filter((b) => !haveB.has(b.id))],
+    };
+  }
   p.models = p.models ?? [];
   p.electrical = p.electrical ?? { groups: defaultGroups() };
   p.baseline = p.baseline ?? null;

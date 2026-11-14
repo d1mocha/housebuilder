@@ -1,7 +1,9 @@
 // Панель свойств выделенного объекта: точный ввод чисел для любой сущности.
 import { useMemo } from 'react';
 import { networkSummary, routeLengthWithDrops, sewerDrop } from '../calc/networks';
-import { isTiled, tileLayout, tileLayoutRect } from '../calc/tiles';
+import { DEFAULT_RESERVE } from '../calc/estimate';
+import { LINOLEUM_ROLL_W, linoleumCalc, packCalc, wallpaperCalc } from '../calc/materials';
+import { isTileType, isTiled, tileLayout, tileLayoutRect } from '../calc/tiles';
 import { underfloorCalc } from '../calc/underfloor';
 import { ROOM_TYPE_NAMES, WALL_MATERIALS } from '../catalog/finishes';
 import { itemDef, num, routeDef, zoneDef } from '../catalog/registry';
@@ -227,6 +229,69 @@ function TileInfo({ finish, result }: { finish: Finish; result: ReturnType<typeo
   );
 }
 
+/** Расчёт рулонных и упаковочных материалов помещения: обои, ламинат/паркет, линолеум. */
+function RoomMaterials({ room, level, project, surfaces }: { room: Room; level: Level; project: Project; surfaces: ReturnType<typeof roomSurfaces> }) {
+  const { t, ls } = useT();
+  const fin = (id: string | null | undefined) => project.finishes.find((f) => f.id === id);
+  const money = (v: number) => `${fmt(Math.round(v))} грн`;
+  const m = (mm: number) => fmt(mm / 1000);
+  const boxes: React.ReactNode[] = [];
+  const floor = fin(room.floorFinish);
+  const resFloor = project.reserves.flooring ?? DEFAULT_RESERVE.flooring;
+  if (floor && (floor.type === 'linoleum' || floor.type === 'carpet')) {
+    const rollW = floor.rollW ?? LINOLEUM_ROLL_W;
+    const c = linoleumCalc(room.polygon, rollW);
+    boxes.push(
+      <div className="calc-box" key="lino" data-calc="linoleum">
+        <b>{ls(floor.name)}</b>
+        <div>
+          {t('Рулон', 'Рулон')} {m(rollW)} м: {c.strips} {t('полотен по', 'полотен по')} {m(c.stripLen)} м = <b>{fmt(c.lengthM)} {t('м.п.', 'м.п.')}</b> ({fmt(c.buyM2)} м²), {t('стиків', 'стыков')}: {c.seams}
+        </div>
+        {!!floor.price && <div>{t('Вартість', 'Стоимость')}: <b>{money(c.buyM2 * floor.price)}</b></div>}
+      </div>,
+    );
+  } else if (floor && (floor.type === 'laminate' || floor.type === 'parquet') && (floor.packArea ?? 0) > 0) {
+    const c = packCalc(room.area, floor.packArea!, resFloor);
+    boxes.push(
+      <div className="calc-box" key="packs" data-calc="packs">
+        <b>{ls(floor.name)}</b>
+        <div>
+          {fmt(room.area)} м² + {resFloor}% = {fmt(c.areaM2)} м² → <b>{c.packs} {t('уп.', 'уп.')}</b> {t('по', 'по')} {fmt(floor.packArea!)} м² ({fmt(c.buyM2)} м²)
+        </div>
+        {!!floor.price && <div>{t('Вартість', 'Стоимость')}: <b>{money(c.buyM2 * floor.price)}</b></div>}
+      </div>,
+    );
+  }
+  const runs = new Map<string, number>();
+  for (const s of surfaces) {
+    const f = fin(s.finishId);
+    if (f?.type !== 'wallpaper') continue;
+    const doors = s.openings.filter((o) => o.sill <= 0 && o.height >= 1900).reduce((a, o) => a + (o.to - o.from), 0);
+    runs.set(f.id, (runs.get(f.id) ?? 0) + Math.max(0, s.length - doors));
+  }
+  for (const [id, run] of runs) {
+    const f = fin(id)!;
+    const c = wallpaperCalc([run], level.height, f);
+    boxes.push(
+      <div className="calc-box" key={`wp${id}`} data-calc="wallpaper">
+        <b>{ls(f.name)}</b>
+        <div>
+          {t('Полотен', 'Полотен')}: {c.strips} {t('по', 'по')} {m(c.stripLen)} м{f.rapport ? ` (${t('рапорт', 'раппорт')} ${f.rapport} мм)` : ''}; {t('з рулону', 'из рулона')} — {c.perRoll} → <b>{c.rolls} {t('рул.', 'рул.')}</b>
+        </div>
+        {c.tooShort && <div className="warn-text">{t('Рулон коротший за одне полотно', 'Рулон короче одного полотна')}</div>}
+        {!!f.price && <div>{t('Вартість', 'Стоимость')}: <b>{money(c.rolls * f.price)}</b></div>}
+      </div>,
+    );
+  }
+  if (!boxes.length) return null;
+  return (
+    <>
+      <h5>{t('Матеріали — розрахунок', 'Материалы — расчёт')}</h5>
+      {boxes}
+    </>
+  );
+}
+
 function RoomProps({ room, sel, project }: { room: Room; sel: Sel; project: Project }) {
   const { t, ls } = useT();
   const level = getLevel(project, sel.scope)!;
@@ -238,7 +303,7 @@ function RoomProps({ room, sel, project }: { room: Room; sel: Sel; project: Proj
   const floor = project.finishes.find((f) => f.id === room.floorFinish);
   const surfaces = useMemo(() => roomSurfaces(level, room), [level, room]);
   const wallArea = surfaces.reduce((s, x) => s + surfaceNetArea(x, level.height), 0) / 1e6;
-  const floorTiles = isTiled(floor) ? tileLayout(room.polygon, [], floor!.tileW!, floor!.tileH!, floor!.grout ?? 0, floor!.pattern, 10, floor!.packArea) : null;
+  const floorTiles = isTiled(floor) && isTileType(floor!.type) ? tileLayout(room.polygon, [], floor!.tileW!, floor!.tileH!, floor!.grout ?? 0, floor!.pattern, 10, floor!.packArea) : null;
   // плитка/панели на стенах — суммарно по типам отделки
   const wallTiles = useMemo(() => {
     const acc = new Map<string, ReturnType<typeof tileLayout>>();
@@ -299,6 +364,7 @@ function RoomProps({ room, sel, project }: { room: Room; sel: Sel; project: Proj
           });
         }}
       />
+      <RoomMaterials room={room} level={level} project={project} surfaces={surfaces} />
       {floorTiles && floor && (
         <>
           <h5>{t('Підлога — розкладка', 'Пол — раскладка')}</h5>
@@ -309,7 +375,7 @@ function RoomProps({ room, sel, project }: { room: Room; sel: Sel; project: Proj
       {wallTiles.map(({ f, r }) => (
         <TileInfo key={f.id} finish={f} result={r} />
       ))}
-      <button onClick={() => useUi.getState().setDialog('finishes')}>{t('Каталог оздоблення…', 'Каталог отделки…')}</button>
+      <button onClick={() => useUi.getState().setDialog('finishes')} data-action="materials">{t('Каталог оздоблення…', 'Каталог отделки…')}</button>
     </Section>
   );
 }

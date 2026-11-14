@@ -208,7 +208,11 @@ export type FinishType =
   | 'panel'
   | 'gkl'
   | 'concrete'
-  | 'stretch';
+  | 'stretch'
+  | 'linoleum'
+  | 'porcelain'
+  | 'stone'
+  | 'carpet';
 
 export interface Finish {
   id: Id;
@@ -229,8 +233,31 @@ export interface Finish {
   packArea?: number;
   /** Расход на м² (штукатурка — кг/м² на 10 мм, краска — л/м²). */
   consumption?: number;
-  /** Толщина слоя, мм. */
+  /** Толщина слоя / покрытия, мм. */
   thickness?: number;
+  /** Текстура из библиотеки CC0 (src/catalog/textures.ts). */
+  textureId?: string;
+  /** Своё фото поверхности (data URL, хранится в проекте) — вместо библиотечной текстуры. */
+  photo?: string;
+  /** Физическая ширина фрагмента на фото, мм. */
+  photoW?: number;
+  /** Масштаб укладки текстуры (1 — натуральный размер). */
+  texScale?: number;
+  /** Поворот укладки, °. */
+  texRot?: number;
+  /** Рулон: ширина и длина, мм (обои; для линолеума — только ширина). */
+  rollW?: number;
+  rollL?: number;
+  /** Раппорт рисунка обоев, мм (0 — без подгонки). */
+  rapport?: number;
+  /** Класс износостойкости (ламинат, линолеум, керамогранит). */
+  wearClass?: string;
+  /** Цена за единицу, грн (единица зависит от типа: рулон, м², л, кг). */
+  price?: number;
+  /** Товар из магазина: ссылка и данные, введённые вручную (сайт магазина приложение не читает). */
+  shopUrl?: string;
+  shopTitle?: string;
+  shopSku?: string;
 }
 
 export interface CustomModel {

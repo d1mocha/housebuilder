@@ -2,6 +2,7 @@
 import { Fragment, useMemo } from 'react';
 import { CATEGORY_NAMES, DEFAULT_RESERVE, buildEstimate, estimateTotal } from '../calc/estimate';
 import type { EstimateCategory } from '../calc/estimate';
+import { safeShopUrl } from '../calc/materials';
 import { download, safeName, toCsv } from '../export/csv';
 import { fmt, useT } from '../i18n';
 import { DISCLAIMER } from '../rules';
@@ -18,8 +19,8 @@ export function EstimateDialog() {
   const cats = [...new Set(lines.map((l) => l.category))];
   const close = () => useUi.getState().setDialog(null);
   const exportCsv = () => {
-    const rows: (string | number)[][] = [[t('Розділ', 'Раздел'), t('Позиція', 'Позиция'), t('Од.', 'Ед.'), t('Кількість', 'Количество'), t('Запас, %', 'Запас, %'), t('До закупівлі', 'К закупке'), t('Ціна', 'Цена'), t('Сума', 'Сумма'), t('Примітка', 'Примечание')]];
-    for (const l of lines) rows.push([ls(CATEGORY_NAMES[l.category]), ls(l.name), ls(l.unit), l.qty, l.reservePct, l.total, l.price, l.sum, ls(l.note)]);
+    const rows: (string | number)[][] = [[t('Розділ', 'Раздел'), t('Позиція', 'Позиция'), t('Од.', 'Ед.'), t('Кількість', 'Количество'), t('Запас, %', 'Запас, %'), t('До закупівлі', 'К закупке'), t('Ціна', 'Цена'), t('Сума', 'Сумма'), t('Примітка', 'Примечание'), t('Посилання', 'Ссылка')]];
+    for (const l of lines) rows.push([ls(CATEGORY_NAMES[l.category]), ls(l.name), ls(l.unit), l.qty, l.reservePct, l.total, l.price, l.sum, ls(l.note), l.url ?? '']);
     rows.push([], [t('Разом', 'Итого'), '', '', '', '', '', '', total]);
     download(`${safeName(project.name)}_koshtorys.csv`, toCsv(rows), 'text/csv;charset=utf-8');
   };
@@ -42,7 +43,7 @@ export function EstimateDialog() {
       }
     >
       <p className="hint">
-        {t('Кількість розраховується з моделі. Запас у % задається для розділу, ціни вводите ви (зберігаються в проєкті). Норми витрати сумішей, фарби, розчину — орієнтовні.', 'Количество рассчитывается из модели. Запас в % задаётся для раздела, цены вводите вы (сохраняются в проекте). Нормы расхода смесей, краски, раствора — ориентировочные.')} {ls(DISCLAIMER)}
+        {t('Кількість розраховується з моделі. Запас у % задається для розділу, ціни беруться з матеріалів або вводяться тут (зберігаються в проєкті). Норми витрати сумішей, фарби, розчину — орієнтовні.', 'Количество рассчитывается из модели. Запас в % задаётся для раздела, цены берутся из материалов или вводятся здесь (сохраняются в проекте). Нормы расхода смесей, краски, раствора — ориентировочные.')} {ls(DISCLAIMER)}
       </p>
       {lines.length === 0 && <p>{t('Поки що нічого рахувати: намалюйте стіни й призначте оздоблення.', 'Пока нечего считать: нарисуйте стены и назначьте отделку.')}</p>}
       <table className="data" data-table="estimate">
@@ -85,6 +86,11 @@ export function EstimateDialog() {
           <tr key={l.key} data-line={l.key}>
             <td>
               {ls(l.name)}
+              {safeShopUrl(l.url) && (
+                <a className="shop-link" href={safeShopUrl(l.url)!} target="_blank" rel="noopener noreferrer" title={t('Відкрити в магазині', 'Открыть в магазине')} data-shop-link>
+                  🛒↗
+                </a>
+              )}
               {l.note && <span className="muted"> — {ls(l.note)}</span>}
             </td>
             <td>{ls(l.unit)}</td>
@@ -94,6 +100,16 @@ export function EstimateDialog() {
             </td>
             <td>
               <NumInput value={l.price} min={0} digits={2} onChange={(v) => useProject.getState().update((d) => void (d.prices[l.key] = v))} />
+              {l.priceFrom === 'material' && (
+                <span className="price-src" data-price-src="material">
+                  {t('з матеріалу', 'из материала')}
+                </span>
+              )}
+              {l.priceFrom === 'user' && l.url !== undefined && (
+                <button className="link price-src" title={t('Повернути ціну з матеріалу', 'Вернуть цену из материала')} onClick={() => useProject.getState().update((d) => void delete d.prices[l.key])}>
+                  {t('своя · скинути', 'своя · сбросить')}
+                </button>
+              )}
             </td>
             <td className="num-cell">{l.sum ? fmt(l.sum) : ''}</td>
           </tr>

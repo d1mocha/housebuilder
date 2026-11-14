@@ -13,6 +13,7 @@ import type { ProjectInfo } from '../store/persistence';
 import { useProject } from '../store/projectStore';
 import { useUi } from '../store/uiStore';
 import { Dialog } from './Dialog';
+import { MaterialsDialog } from './MaterialsDialog';
 import { NumInput } from './fields';
 import { useIssues } from './SidePanels';
 
@@ -224,108 +225,6 @@ function RulesDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-function FinishesDialog({ onClose }: { onClose: () => void }) {
-  const { t, ls, lang } = useT();
-  const finishes = useProject((s) => s.project.finishes);
-  const mut = (id: string, fn: (f: Finish) => void) =>
-    useProject.getState().update((d) => {
-      const f = d.finishes.find((x) => x.id === id);
-      if (f) fn(f);
-    });
-  const add = (type: Finish['type']) =>
-    useProject.getState().update((d) => {
-      const tiled = type === 'tile' || type === 'laminate' || type === 'panel';
-      d.finishes.push({
-        id: newId('fin'),
-        name: { uk: `${FINISH_TYPE_NAMES[type].uk} (нове)`, ru: `${FINISH_TYPE_NAMES[type].ru} (новое)` },
-        type,
-        color: '#d8d4cc',
-        target: type === 'laminate' ? ['floor'] : type === 'tile' ? ['wall', 'floor'] : ['wall', 'ceiling'],
-        ...(tiled ? { tileW: type === 'tile' ? 600 : type === 'panel' ? 200 : 1380, tileH: type === 'tile' ? 300 : type === 'panel' ? 2600 : 193, grout: type === 'tile' ? 2 : 0, groutColor: '#b0b4b8', pattern: type === 'tile' ? 'grid' : 'brick', packArea: 1.5 } : {}),
-      });
-    });
-  return (
-    <Dialog
-      title={t('Каталог оздоблення', 'Каталог отделки')}
-      onClose={onClose}
-      wide
-      footer={
-        <>
-          <span>{t('Додати:', 'Добавить:')}</span>
-          {(['paint', 'plaster', 'tile', 'laminate', 'panel', 'gkl'] as Finish['type'][]).map((ty) => (
-            <button key={ty} onClick={() => add(ty)}>
-              + {ls(FINISH_TYPE_NAMES[ty])}
-            </button>
-          ))}
-        </>
-      }
-    >
-      <table className="data">
-        <thead>
-          <tr>
-            <th>{t('Назва', 'Название')}</th>
-            <th>{t('Тип', 'Тип')}</th>
-            <th>{t('Колір', 'Цвет')}</th>
-            <th>{t('Застосування', 'Применение')}</th>
-            <th>{t('Елемент Ш×В, мм', 'Элемент Ш×В, мм')}</th>
-            <th>{t('Шов', 'Шов')}</th>
-            <th>{t('Розкладка', 'Раскладка')}</th>
-            <th>{t('м² в упак.', 'м² в упак.')}</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {finishes.map((f) => {
-            const tiled = f.tileW !== undefined;
-            return (
-              <tr key={f.id}>
-                <td>
-                  <input type="text" value={f.name[lang]} onChange={(e) => mut(f.id, (x) => (x.name = { ...x.name, [lang]: e.target.value }))} />
-                </td>
-                <td>{ls(FINISH_TYPE_NAMES[f.type])}</td>
-                <td>
-                  <input type="color" value={f.color} onChange={(e) => mut(f.id, (x) => (x.color = e.target.value))} />
-                </td>
-                <td className="nowrap">
-                  {(['wall', 'floor', 'ceiling'] as const).map((tg) => (
-                    <label key={tg} className="mini-check" title={tg}>
-                      <input type="checkbox" checked={f.target.includes(tg)} onChange={(e) => mut(f.id, (x) => (x.target = e.target.checked ? [...x.target, tg] : x.target.filter((q) => q !== tg)))} />
-                      {tg === 'wall' ? t('ст', 'ст') : tg === 'floor' ? t('підл', 'пол') : t('стеля', 'потол')}
-                    </label>
-                  ))}
-                </td>
-                <td className="nowrap">
-                  {tiled && (
-                    <>
-                      <NumInput value={f.tileW ?? 0} min={10} max={5000} onChange={(v) => mut(f.id, (x) => (x.tileW = v))} /> × <NumInput value={f.tileH ?? 0} min={10} max={5000} onChange={(v) => mut(f.id, (x) => (x.tileH = v))} />
-                    </>
-                  )}
-                </td>
-                <td>{tiled && <NumInput value={f.grout ?? 0} min={0} max={20} onChange={(v) => mut(f.id, (x) => (x.grout = v))} />}</td>
-                <td>
-                  {tiled && (
-                    <select value={f.pattern ?? 'grid'} onChange={(e) => mut(f.id, (x) => (x.pattern = e.target.value as Finish['pattern']))}>
-                      <option value="grid">{t('Шов у шов', 'Шов в шов')}</option>
-                      <option value="brick">{t('Урозбіжку', 'Вразбежку')}</option>
-                      <option value="diagonal">{t('Діагональ', 'Диагональ')}</option>
-                    </select>
-                  )}
-                </td>
-                <td>{tiled && <NumInput value={f.packArea ?? 0} min={0} max={50} digits={2} onChange={(v) => mut(f.id, (x) => (x.packArea = v))} />}</td>
-                <td>
-                  <button className="icon-btn danger" title={t('Видалити', 'Удалить')} onClick={() => useProject.getState().update((d) => void (d.finishes = d.finishes.filter((x) => x.id !== f.id)))}>
-                    ✕
-                  </button>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </Dialog>
-  );
-}
-
 function GroupsDialog({ onClose }: { onClose: () => void }) {
   const { t } = useT();
   const project = useProject((s) => s.project);
@@ -455,7 +354,7 @@ export function BasicDialogs() {
     case 'rules':
       return <RulesDialog onClose={close} />;
     case 'finishes':
-      return <FinishesDialog onClose={close} />;
+      return <MaterialsDialog onClose={close} />;
     case 'groups':
       return <GroupsDialog onClose={close} />;
     default:

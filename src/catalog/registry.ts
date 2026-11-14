@@ -18,7 +18,23 @@ export type Mat3 = 'matte' | 'wood' | 'metal' | 'glass' | 'fabric' | 'ceramic' |
 
 /** 3D-примитив в системе объекта: x∈[0,w], y∈[0,d] (0 — спинка), z вверх. */
 export type Prim3 =
-  | { t: 'box'; x: number; y: number; z: number; w: number; d: number; h: number; c: string; m?: Mat3 }
+  | {
+      t: 'box';
+      x: number;
+      y: number;
+      z: number;
+      w: number;
+      d: number;
+      h: number;
+      c: string;
+      m?: Mat3;
+      /** Текстура декора из библиотеки. */
+      tx?: string;
+      /** Ось волокон в системе объекта (x — ширина, y — глубина, z — высота). */
+      ga?: 'x' | 'y' | 'z';
+      /** Ключ детали (для выбора щелчком в 3D). */
+      key?: string;
+    }
   /** Цилиндр/конус: (x,y,z) — центр основания; ось по умолчанию z. */
   | { t: 'cyl'; x: number; y: number; z: number; r: number; h: number; c: string; m?: Mat3; axis?: 'x' | 'y' | 'z'; r2?: number }
   | { t: 'sphere'; x: number; y: number; z: number; r: number; c: string; m?: Mat3 };

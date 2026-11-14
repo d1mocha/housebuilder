@@ -3,7 +3,7 @@ import { DEFAULT_CEILING_FINISH, DEFAULT_FLOOR_FINISH, DEFAULT_WALL_FINISH, defa
 import { newId } from './ids';
 import type { ElGroup, ElementStatus, Level, Opening, Project, ProjectKind, Site, Vec2, Wall } from './types';
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export function createLevel(name: string, elevation = 0, height = 2700): Level {
   return {

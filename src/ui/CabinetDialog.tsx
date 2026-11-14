@@ -1,4 +1,5 @@
 // Конструктор корпусной мебели: параметры изделия, 3D-превью, деталировка, раскрой, фурнитура, материалы.
+import { Invalidator } from '../view3d/Invalidator';
 import { OrbitControls } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
 import { useEffect, useMemo, useState } from 'react';
@@ -10,6 +11,7 @@ import type { MaterialNest } from '../cabinet/nesting';
 import { BUILTIN_TEMPLATES, autoDrawerCount, cloneDesign, newColumn } from '../cabinet/templates';
 import type { CabinetCatalog, CabinetDesign, CabinetResult, EdgeSides, Grain, Part } from '../cabinet/types';
 import type { Prim3 } from '../catalog/registry';
+import { TEXTURES, textureDef, textureUrl } from '../catalog/textures';
 import { download, safeName, toCsv } from '../export/csv';
 import { fmt, useT } from '../i18n';
 import { newId } from '../model/ids';
@@ -17,7 +19,7 @@ import type { Project } from '../model/types';
 import { deleteTemplate, listTemplates, saveTemplate } from '../store/persistence';
 import { useProject } from '../store/projectStore';
 import { useUi } from '../store/uiStore';
-import { primsToGroup } from '../view3d/build';
+import { cabinetPartPrims, primsToGroup } from '../view3d/build';
 import { Dialog } from './Dialog';
 import { Check, Num, NumInput, Section, Select, Text } from './fields';
 
@@ -46,25 +48,15 @@ export function syncCabinetItems(p: Project, d: CabinetDesign): void {
   p.levels.forEach((l) => apply(l.items));
 }
 
+/** Декоры плит: древесные текстуры библиотеки (волокна вдоль длины листа). */
+const DECOR_TEXTURES = TEXTURES.filter((x) => x.category === 'wood' || x.category === 'stone');
+
 function Preview({ parts, design, showFacades }: { parts: Part[]; design: CabinetDesign; showFacades: boolean }) {
   const catalog = useProject((s) => s.project.cabinetCatalog);
   const group = useMemo(() => {
-    const prims: Prim3[] = [];
-    let depth = design.depth;
-    for (const p of parts) {
-      if (!p.box) continue;
-      const isFacade = p.role === 'facade' || p.role === 'drawerFront' || p.role === 'slidingDoor' || p.role === 'slidingProfile';
-      if (isFacade && !showFacades) continue;
-      depth = Math.max(depth, p.box.y + p.box.sy);
-      const board = catalog.boards.find((b) => b.id === p.materialId);
-      if (p.role === 'slidingProfile') {
-        prims.push({ t: 'box', x: p.box.x, y: p.box.y, z: p.box.z, w: p.box.sx, d: p.box.sy, h: p.box.sz, c: '#b8bcc2', m: 'metal' });
-        continue;
-      }
-      prims.push({ t: 'box', x: p.box.x, y: p.box.y, z: p.box.z, w: p.box.sx, d: p.box.sy, h: p.box.sz, c: isFacade ? (design.color ?? shade(board?.color ?? '#cdb58a')) : (board?.color ?? '#cdb58a'), m: 'wood' });
-    }
+    const { prims, depth } = cabinetPartPrims(parts, design, catalog, { facades: showFacades });
     return primsToGroup(prims, { w: design.width, d: depth });
-  }, [parts, design.width, design.depth, design.color, showFacades, catalog.boards]);
+  }, [parts, design, showFacades, catalog]);
   useEffect(
     () => () =>
       group.traverse((c) => {
@@ -81,6 +73,7 @@ function Preview({ parts, design, showFacades }: { parts: Part[]; design: Cabine
       <directionalLight position={[3, 5, 4]} intensity={1.1} />
       <directionalLight position={[-4, 3, -2]} intensity={0.4} />
       <primitive object={group} />
+      <Invalidator />
       <gridHelper args={[8, 16, '#c5ccd6', '#dde2e8']} />
       <OrbitControls target={[0, design.height / 2000, 0]} makeDefault />
     </Canvas>
@@ -407,7 +400,7 @@ function HardwareTab({ design, result }: { design: CabinetDesign; result: Cabine
 }
 
 function MaterialsTab({ catalog }: { catalog: CabinetCatalog }) {
-  const { t, lang } = useT();
+  const { t, ls, lang } = useT();
   const mut = (fn: (c: CabinetCatalog) => void) =>
     useProject.getState().update((p) => {
       fn(p.cabinetCatalog);
@@ -427,7 +420,8 @@ function MaterialsTab({ catalog }: { catalog: CabinetCatalog }) {
             <th>{t('Назва', 'Название')}</th>
             <th>{t('Товщина', 'Толщина')}</th>
             <th>{t('Лист Д×Ш', 'Лист Д×Ш')}</th>
-            <th>{t('Текстура', 'Текстура')}</th>
+            <th title={t('Є напрямок текстури: деталі не повертаються під час розкрою', 'Есть направление текстуры: детали не поворачиваются при раскрое')}>{t('Напрямок', 'Направление')}</th>
+            <th>{t('Декор (текстура)', 'Декор (текстура)')}</th>
             <th>{t('Колір', 'Цвет')}</th>
             <th />
           </tr>
@@ -446,6 +440,32 @@ function MaterialsTab({ catalog }: { catalog: CabinetCatalog }) {
               </td>
               <td className="center">
                 <input type="checkbox" checked={b.grain} onChange={(e) => mut((c) => (c.boards[i].grain = e.target.checked))} />
+              </td>
+              <td>
+                <span className="row">
+                  <span className="tex-thumb" style={{ width: 26, height: 26, backgroundColor: b.color, backgroundImage: b.textureId ? `url("${textureUrl(b.textureId)}")` : undefined }} />
+                  <select
+                    value={b.textureId ?? ''}
+                    data-decor={b.id}
+                    onChange={(e) =>
+                      mut((c) => {
+                        const tex = textureDef(e.target.value);
+                        if (tex) {
+                          c.boards[i].textureId = tex.id;
+                          c.boards[i].color = tex.avg;
+                          c.boards[i].grain = true;
+                        } else delete c.boards[i].textureId;
+                      })
+                    }
+                  >
+                    <option value="">{t('— однотонний —', '— однотонный —')}</option>
+                    {DECOR_TEXTURES.map((x) => (
+                      <option key={x.id} value={x.id}>
+                        {ls(x.name)}
+                      </option>
+                    ))}
+                  </select>
+                </span>
               </td>
               <td>
                 <input type="color" value={b.color} onChange={(e) => mut((c) => (c.boards[i].color = e.target.value))} />
