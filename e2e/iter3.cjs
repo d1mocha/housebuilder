@@ -278,6 +278,42 @@ const fs = require('fs');
   check('7 разнотипное выделение: «3 об’єкти» и разбивка «2 стіни, 1 розмір»', (await statusSel()) === 'Виділено: 3 об’єкти' && /2 стіни, 1 розмір/.test(mixedTxt), `${await statusSel()} | ${mixedTxt.slice(0, 40)}`);
   await page.keyboard.press('Escape');
 
+  // ── 8. смета: подсказка вместо «0 грн» и импорт цен из CSV ──
+  await openDemo();
+  await page.click('.topbar >> text=Кошторис');
+  await page.waitForSelector('[data-table="estimate"]');
+  check('8 без цен вместо «0 грн» — подсказка', (await page.getAttribute('[data-total]', 'data-total')) === 'none' && /Введіть ціни, щоб побачити суму/.test(await page.textContent('[data-total]')) && !/0 грн/.test(await page.textContent('.dialog footer')));
+  const totalRow = await page.textContent('[data-table="estimate"] tr.total:last-child');
+  check('8 в итоговой строке таблицы — тоже подсказка, а не ноль', /Введіть ціни/.test(totalRow) && !/Разом\s*0/.test(totalRow), totalRow.trim());
+  // файл цен: по названию позиции (как в таблице), одна позиция — которой нет в смете
+  const names = await page.$$eval('[data-table="estimate"] tr[data-line]', (trs) => trs.map((tr) => ({ key: tr.dataset.line, name: tr.children[0].childNodes[0].textContent.trim() })));
+  const pick = (re) => names.find((n) => re.test(n.key));
+  const cable = pick(/^cable\.3/);
+  const packs = pick(/^flooring\..*\.pack$/);
+  const sock = pick(/^dev\.el-socket$/);
+  const csvPath = path.join(out, 'prices.csv');
+  fs.writeFileSync(csvPath, '﻿' + ['Позиція;Ціна', `${cable.name};45,5`, `"${packs.name}";1 100`, `${sock.name.toUpperCase()};120`, 'Позиція, якої немає;999'].join('\r\n'));
+  await page.setInputFiles('[data-field="prices-csv"]', csvPath);
+  await page.waitForSelector('[data-import-info]');
+  const prices = await page.evaluate(() => window.__hb.useProject.getState().project.prices);
+  check('8 импорт цен из CSV: три позиции получили цены', prices[cable.key] === 45.5 && prices[packs.key] === 1100 && prices[sock.key] === 120 && Object.keys(prices).length === 3, JSON.stringify(prices));
+  const info = await page.textContent('[data-import-info]');
+  check('8 отчёт об импорте: сколько цен принято и что не найдено', (await page.getAttribute('[data-import-info]', 'data-import-info')) === '3' && /3 ціни/.test(info) && /Позиція, якої немає/.test(info), info.trim().slice(0, 120));
+  const tot = await page.textContent('[data-total]');
+  const sumCable = await page.$eval(`[data-table="estimate"] tr[data-line="${cable.key}"]`, (tr) => tr.children[5].textContent.trim());
+  check('8 после импорта показана сумма и число позиций без цены', /Разом: [\d\s,]+ грн/.test(tot) && /без ціни: \d+ позиці/.test(tot) && sumCable.length > 0, tot.trim());
+  check('8 импорт — одна запись истории', (await state(page)).past === 1);
+  await page.screenshot({ path: path.join(out, '57-estimate-import.png') });
+  // шаблон цен выгружается и читается обратно
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.click('[data-action="csv-template"]')]);
+  const tplPath = path.join(out, 'prices-template.csv');
+  await dl.saveAs(tplPath);
+  const tpl = fs.readFileSync(tplPath, 'utf8');
+  check('8 шаблон цен: «Позиція;Ціна» по всем строкам сметы, с уже введёнными ценами', tpl.charCodeAt(0) === 0xfeff && /^﻿Позиція;Ціна\r\n/.test(tpl) && tpl.split('\r\n').length === names.length + 1 && tpl.includes(`${cable.name};45,5`), tpl.split('\r\n').slice(0, 2).join(' | '));
+  await page.click('.dialog footer >> text=Закрити');
+  await page.keyboard.press('Control+KeyZ');
+  check('8 undo отменяет импорт цен', Object.keys(await page.evaluate(() => window.__hb.useProject.getState().project.prices)).length === 0);
+
   check('нет ошибок в консоли', errors.length === 0, errors.slice(0, 5).join(' | '));
   await browser.close();
 })().catch((e) => {

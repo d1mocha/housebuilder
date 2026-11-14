@@ -142,7 +142,7 @@ const fs = require('fs');
   check('2.4 смета: сумма по обоям = рулоны × цена', !!wr && num(wr.tds[5]) === num(wr.tds[3]) * 850 && num(wr.tds[3]) >= 4, wr && `${wr.tds[3]} × 850 = ${wr.tds[5]}`);
   const lr = await row('flooring.laminate-walnut.pack');
   check('2.4 смета: ламинат — в упаковках, цена упаковки = цена м² × площадь упаковки', !!lr && /уп\./.test(lr.tds[1]) && Math.abs(num(lr.price) - 520 * 1.73) < 0.01 && Number.isInteger(num(lr.tds[3])) && num(lr.tds[5]) > 0, JSON.stringify(lr));
-  const total = num((await page.textContent('[data-total]')).replace(/[^\d,.\s]/g, ''));
+  const total = num(((await page.textContent('[data-total]')).match(/Разом: ([\d\s,]+) грн/) || ['', '0'])[1]);
   check('2.4 итог сметы включает материалы с ценами', total >= num(wr.tds[5]) + num(lr.tds[5]), String(total));
   await page.screenshot({ path: path.join(out, '33-materials-estimate.png') });
   await page.click('.dialog footer >> text=Закрити');

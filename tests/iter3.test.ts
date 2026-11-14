@@ -1,7 +1,9 @@
 // Итерация 3: сдвиг стен (проёмы на месте, мебель едет со стеной, коллизии) и остальные пункты.
 import { describe, expect, it } from 'vitest';
 import '../src/catalog';
+import { buildEstimate, estimateTotal } from '../src/calc/estimate';
 import { finishInUse, isEmptyShopDraft, shopDraftProblem } from '../src/calc/materials';
+import { matchPrices, normName, parsePrice, parsePriceCsv } from '../src/calc/priceImport';
 import { count, countNoun, plural } from '../src/i18n';
 import { convexOverlap, itemsFlushToWall, itemsInWalls, openingsOutOfWall, orphanItems } from '../src/model/checks';
 import { createProject, createWall, roomDefaults } from '../src/model/defaults';
@@ -575,5 +577,55 @@ describe('6. выравнивание и распределение стен', (
     l.openings.forEach((o, i) => {
       if (!own.has(o.id)) expect(absCenter(l, o)).toEqual(before[i]);
     });
+  });
+});
+
+describe('8. смета: импорт цен из CSV', () => {
+  it('число цены: десятичная запятая или точка, пробелы тысяч, «грн»', () => {
+    expect(parsePrice('850')).toBe(850);
+    expect(parsePrice('1 234,50')).toBe(1234.5);
+    expect(parsePrice('1234.5')).toBe(1234.5);
+    expect(parsePrice('1,234.50')).toBe(1234.5);
+    expect(parsePrice('899,6 грн')).toBe(899.6);
+    expect(parsePrice('')).toBeNaN();
+    expect(parsePrice('дорого')).toBeNaN();
+  });
+  it('простой файл «позиція; ціна» без заголовка, с BOM и кавычками', () => {
+    const rows = parsePriceCsv('﻿Кабель ВВГнг 3×2,5 мм²;42,5\r\n"Плитка; біла";310\r\n\r\nбез ціни;\r\nтекст;abc\r\n');
+    expect(rows).toEqual([
+      { name: 'Кабель ВВГнг 3×2,5 мм²', price: 42.5 },
+      { name: 'Плитка; біла', price: 310 },
+    ]);
+  });
+  it('заголовки «Позиція / Ціна» в любом порядке; разделители «;», запятая, табуляция', () => {
+    expect(parsePriceCsv('Ціна;Позиція\n120;Профіль CD\n')).toEqual([{ name: 'Профіль CD', price: 120 }]);
+    expect(parsePriceCsv('Позиция,Цена\nГипсокартон,215.5\n')).toEqual([{ name: 'Гипсокартон', price: 215.5 }]);
+    expect(parsePriceCsv('name\tprice\nCable\t40\n')).toEqual([{ name: 'Cable', price: 40 }]);
+  });
+  it('файл нашего «Експорт CSV» читается: берутся столбцы «Позиція» и «Ціна»', () => {
+    const csv = ['Розділ;Позиція;Од.;Кількість;Запас, %;До закупівлі;Ціна;Сума;Примітка;Посилання', 'Кабель і штроби;Кабель ВВГнг 3×2,5 мм²;м;17,09;10;19;45;855;;', ';;;;;;;', 'Разом;;;;;;;855'].join('\r\n');
+    expect(parsePriceCsv(csv)).toEqual([{ name: 'Кабель ВВГнг 3×2,5 мм²', price: 45 }]);
+  });
+  it('сопоставление со сметой демо: по названию (uk/ru, без учёта регистра и кавычек) и по ключу', () => {
+    const p = createDemoProject();
+    const lines = buildEstimate(p);
+    expect(estimateTotal(lines)).toBe(0); // в демо цен нет
+    const cable = lines.find((l) => l.key.startsWith('cable.3'))!;
+    const lam = lines.find((l) => l.key.startsWith('flooring.') && l.key.endsWith('.pack'))!;
+    const paint = lines.find((l) => l.category === 'paint' && l.unit.uk === 'л')!;
+    const m = matchPrices(lines, [
+      { name: cable.name.uk.toUpperCase(), price: 45 },
+      { name: `  ${lam.name.ru}  `, price: 1100 },
+      { name: paint.key, price: 320 },
+      { name: 'Чого немає в кошторисі', price: 10 },
+      { name: lines[0].name.uk, price: 0 }, // нулевая цена не импортируется
+    ]);
+    expect(m.prices).toEqual({ [cable.key]: 45, [lam.key]: 1100, [paint.key]: 320 });
+    expect(m.unmatched).toEqual(['Чого немає в кошторисі']);
+    Object.assign(p.prices, m.prices);
+    const priced = buildEstimate(p);
+    expect(priced.find((l) => l.key === cable.key)!.priceFrom).toBe('user');
+    expect(estimateTotal(priced)).toBeGreaterThan(0);
+    expect(normName('  «Дуб»   АЛЬПІЙСЬКИЙ ')).toBe('дуб альпійський');
   });
 });
