@@ -29,3 +29,11 @@ export const fmt = (n: number, digits = 2): string => {
 
 /** Длина в метрах из мм. */
 export const fmtM = (mm: number, digits = 2): string => fmt(mm / 1000, digits);
+
+import { NOUNS, count } from './plural';
+import type { Noun } from './plural';
+
+export * from './plural';
+
+/** «3 стіни» / «3 стены» на языке интерфейса. */
+export const countNoun = (n: number, noun: Noun, lang: Lang): string => count(n, NOUNS[noun][lang] ?? NOUNS[noun].uk);

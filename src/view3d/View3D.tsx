@@ -19,10 +19,9 @@ import { buildFloors, buildItemObject, buildRoof, buildRouteObject, buildSiteGro
 import { Invalidator } from './Invalidator';
 import { disposeSprite, textSprite } from './label';
 import { loadCustomModel } from './models';
-import { resolveCollisions, walkStart } from './walk';
+import { EYE, resolveCollisions, walkObstacles, walkStart } from './walk';
 
 const MM = 0.001;
-const EYE = 1600;
 const BODY_R = 220;
 
 function disposeObject(o: THREE.Object3D) {
@@ -191,19 +190,6 @@ function SelectionBox({ project, sel }: { project: Project; sel: Sel | null }) {
       </lineSegments>
     </group>
   );
-}
-
-/** Контуры мебели, мешающей ходить (выше 25 см, ниже уровня глаз). */
-export function walkObstacles(level: Level): Vec2[][] {
-  const out: Vec2[][] = [];
-  for (const it of level.items) {
-    const def = itemDef(it.kind);
-    if ((def?.layer ?? 'furniture') !== 'furniture') continue;
-    const s = itemSize(it);
-    if (s.h < 250 || it.z > 1700) continue;
-    out.push(rectCorners({ x: it.x, y: it.y }, s.w, s.d, it.rot));
-  }
-  return out;
 }
 
 function WalkControls({ level }: { level: Level }) {

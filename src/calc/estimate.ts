@@ -5,6 +5,7 @@ import { generateCabinet } from '../cabinet/generate';
 import { nestCutList } from '../cabinet/nesting';
 import { wallMaterial } from '../catalog/finishes';
 import { itemDef, num, routeDef } from '../catalog/registry';
+import { NOUNS, count } from '../i18n/plural';
 import type { Finish, Level, LS, Project } from '../model/types';
 import { roomSurfaces, surfaceNetArea, wallLen } from '../model/walls';
 import { ruleValue } from '../rules';
@@ -226,8 +227,8 @@ export function buildEstimate(p: Project): EstimateLine[] {
           c.strips / c.perRoll,
           'int',
           L(
-            `рулон ${m3(rollW)}×${m3(rollL)} м; полотно ${m3(c.stripLen)} м${f.rapport ? `, рапорт ${f.rapport} мм` : ''}; ${c.perRoll} полотен з рулону${c.tooShort ? ' — рулон коротший за полотно!' : ''}`,
-            `рулон ${m3(rollW)}×${m3(rollL)} м; полотно ${m3(c.stripLen)} м${f.rapport ? `, раппорт ${f.rapport} мм` : ''}; ${c.perRoll} полотен из рулона${c.tooShort ? ' — рулон короче полотна!' : ''}`,
+            `рулон ${m3(rollW)}×${m3(rollL)} м; полотно ${m3(c.stripLen)} м${f.rapport ? `, рапорт ${f.rapport} мм` : ''}; ${count(c.perRoll, NOUNS.strip.uk)} з рулону${c.tooShort ? ' — рулон коротший за полотно!' : ''}`,
+            `рулон ${m3(rollW)}×${m3(rollL)} м; полотно ${m3(c.stripLen)} м${f.rapport ? `, раппорт ${f.rapport} мм` : ''}; ${count(c.perRoll, NOUNS.strip.ru)} из рулона${c.tooShort ? ' — рулон короче полотна!' : ''}`,
           ),
           matOf(f),
         );

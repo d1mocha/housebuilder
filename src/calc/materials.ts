@@ -1,7 +1,7 @@
 // Расчёт количества отделочных материалов: обои (рулоны с учётом раппорта и высоты),
 // ламинат/паркет (упаковки), линолеум (метраж рулона), единицы цены.
 import { bbox } from '../model/geometry';
-import type { Finish, LS, Vec2 } from '../model/types';
+import type { Finish, LS, Project, Vec2 } from '../model/types';
 
 export type PriceUnit = 'roll' | 'm2' | 'l' | 'kg';
 
@@ -128,4 +128,29 @@ export function safeShopUrl(url: string | undefined | null): string | null {
   } catch {
     return null;
   }
+}
+
+/** Имя по умолчанию у только что открытой формы «товар из магазина». */
+const SHOP_DEFAULT_NAME = /: товар (з магазину|из магазина)$/;
+
+/**
+ * Пустой черновик товара из магазина: нет рабочей ссылки, имя не менялось, нет цены, названия в магазине и
+ * артикула. Такой материал ничего не сообщает и в проект не сохраняется.
+ */
+export function isEmptyShopDraft(f: Finish): boolean {
+  if (f.shopUrl === undefined) return false;
+  return !safeShopUrl(f.shopUrl) && SHOP_DEFAULT_NAME.test(f.name.uk) && !(f.price && f.price > 0) && !f.shopTitle?.trim() && !f.shopSku?.trim();
+}
+
+/** Причина, по которой товар из магазина нельзя сохранить; null — можно. */
+export function shopDraftProblem(f: Finish): 'empty' | 'badUrl' | 'noName' | null {
+  if (!f.name.uk.trim() && !f.name.ru.trim()) return 'noName';
+  if (f.shopUrl && f.shopUrl.trim() && !safeShopUrl(f.shopUrl)) return 'badUrl';
+  if (isEmptyShopDraft(f)) return 'empty';
+  return null;
+}
+
+/** Используется ли материал где-нибудь в проекте (стены, полы, потолки). */
+export function finishInUse(p: Project, id: string): boolean {
+  return p.levels.some((l) => l.walls.some((w) => w.finishL === id || w.finishR === id) || l.rooms.some((r) => r.floorFinish === id || r.ceilingFinish === id));
 }

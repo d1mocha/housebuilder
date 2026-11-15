@@ -11,6 +11,7 @@ import { useUi } from './store/uiStore';
 import type { ToolId } from './store/uiStore';
 import { BasicDialogs, openProject } from './ui/Dialogs';
 import { Hints } from './ui/Hints';
+import { OrphanBanner } from './ui/OrphanBanner';
 import { LeftPanel } from './ui/LeftPanel';
 import { Properties } from './ui/Properties';
 import { IssuesPanel, LayersPanel } from './ui/SidePanels';
@@ -139,7 +140,8 @@ function usePersistence(): boolean {
         p = null;
       }
       if (!alive) return;
-      openProject(p ?? createDemoProject());
+      if (p) openProject(p, { saved: true });
+      else openProject(createDemoProject());
       setReady(true);
     })();
     return () => {
@@ -198,6 +200,7 @@ export default function App() {
               <View3D />
             </Suspense>
           )}
+          <OrphanBanner />
           <Hints />
         </div>
         <aside className="right-panel">

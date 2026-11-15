@@ -80,7 +80,7 @@ describe('чертежи', () => {
     expect(texts).toContain('Вітальня');
     expect(texts.some((t) => /м²$/.test(t))).toBe(true);
     expect(texts).toContain('4350'); // внутренний размер гостиной
-    expect(m.scale).toBe(75); // с внешними размерными цепочками и ведомостью проёмов
+    expect(m.scale).toBe(50); // «Авто»: наибольший из 1:50 / 1:75 / 1:100, при котором план с цепочками и ведомостью помещается
     const e = buildSheet(demo, { kind: 'electrical', levelId: demo.levels[0].id, paper: 'A3', landscape: true, scale: 0 }, 'ru');
     const et = e.prims.filter((p) => p.t === 'text').map((p) => (p as { text: string }).text);
     expect(et).toContain('Условные обозначения');

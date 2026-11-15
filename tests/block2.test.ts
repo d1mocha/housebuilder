@@ -208,7 +208,7 @@ describe('2.4 смета по материалам', () => {
     expect(wl.url).toBe('https://shop.example.com/wp/1');
     expect(wl.sum).toBe(wl.total * 850);
     expect(wl.note?.uk).toContain('рапорт 640 мм');
-    expect(wl.note?.uk).toContain('3 полотен з рулону');
+    expect(wl.note?.uk).toContain('3 полотна з рулону');
   });
   it('ламинат: упаковки, цена упаковки = цена за м² × площадь упаковки', () => {
     const { p, bed } = setup();

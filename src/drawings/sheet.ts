@@ -1,12 +1,14 @@
 // Листы чертежей: рамка, штамп, условные обозначения, планы по слоям. Координаты — мм бумаги.
 import { itemDef, routeDef, zoneDef } from '../catalog/registry';
 import type { LayerId, Lang, Level, LS, Project } from '../model/types';
-import { dimEntityPrims, itemPrims, northArrowPrims, openingMarkPrims, openingMarks, openingPrims, outerDimPrims, roomDimPrims, roomLabelPrims, routePrims, sitePrims, wallsPrims, zonePrims } from '../draw2d/plan';
+import { dimEntityPrims, itemPrims, northArrowPrims, openingMarkPos, openingMarkPrims, openingMarks, openingPrims, outerDimPrims, roomDimPrims, roomLabelPrims, routePrims, sitePrims, wallsPrims, zonePrims } from '../draw2d/plan';
 import type { OpeningMark } from '../draw2d/plan';
 import type { Prim2 } from '../draw2d/prims';
 import { line, primsBBox, rect, text, transform } from '../draw2d/prims';
 import { elevationPrims, facadePrims, sectionPrims } from './views';
-import { geomOf } from '../model/walls';
+import { layoutMarks, layoutRoomLabels, markBox, textWidth } from './labels';
+import type { Box } from './labels';
+import { geomOf, wallDir } from '../model/walls';
 
 export type SheetKind = 'measure' | 'furniture' | 'electrical' | 'plumbing' | 'heating' | 'ventilation' | 'elevations' | 'section' | 'facades' | 'site';
 
@@ -47,6 +49,15 @@ export interface Sheet {
 
 const PAPER = { A4: [210, 297], A3: [297, 420] } as const;
 const SCALES = [10, 20, 25, 50, 75, 100, 150, 200, 250, 500, 1000];
+/** Стандартные масштабы планов для режима «Авто» — от крупного к мелкому. */
+export const PLAN_AUTO_SCALES = [50, 75, 100];
+
+/** Кандидаты масштаба «Авто» для вида листа (от крупного к мелкому). */
+export function autoScales(kind: SheetSpec['kind']): number[] {
+  // развёртки, разрезы и фасады — небольшие виды: им доступны и более крупные масштабы
+  if (kind === 'elevations' || kind === 'section' || kind === 'facades') return SCALES;
+  return [...PLAN_AUTO_SCALES, ...SCALES.filter((s) => s > 100)];
+}
 const STAMP_W = 185;
 const STAMP_H = 40;
 
@@ -191,22 +202,41 @@ function planContent(p: Project, level: Level, kind: SheetKind, N: number, lang:
       legend.set(r.kind, { prims: [line(0, 0, 100, 0, { stroke: c, w: 0.5, dash: def.dash })], label: pick(def.name, lang) });
     }
   }
-  for (const r of level.rooms) out.push(...roomLabelPrims(r, N));
   let schedule: OpeningMark[] = [];
+  /** Занятые места, на которые не должны налезать подписи помещений. */
+  const busy: Box[] = [];
   if (kind === 'measure') {
     // обмерный план: внутренние размеры без дублей, внешние цепочки (проёмы → оси → габарит), марки проёмов
-    out.push(...roomDimPrims(level, N));
+    const roomDims = roomDimPrims(level, N);
+    out.push(...roomDims);
+    // подписи помещений обходят и числа внутренних размеров
+    for (const q of roomDims) {
+      if (q.t !== 'text') continue;
+      const half = (textWidth(q.text, q.size) / 2 + 0.3) * N;
+      const thin = (q.size / 2 + 0.3) * N;
+      const vertical = Math.abs(((q.rot ?? 0) % 180) - 90) < 45;
+      busy.push({ minX: q.x - (vertical ? thin : half), maxX: q.x + (vertical ? thin : half), minY: q.y - (vertical ? half : thin), maxY: q.y + (vertical ? half : thin) });
+    }
     out.push(...outerDimPrims(gm.walls, gm.openings, N));
     const marks = openingMarks(level.openings);
     schedule = marks.schedule;
     const pts = gm.walls.flatMap((w) => [w.a, w.b]);
     const c = pts.length ? { x: pts.reduce((s, q) => s + q.x, 0) / pts.length, y: pts.reduce((s, q) => s + q.y, 0) / pts.length } : { x: 0, y: 0 };
-    for (const o of gm.openings) {
+    // марки разводятся между собой, затем подписи помещений обходят марки
+    const list = gm.openings.flatMap((o) => {
       const w = gm.walls.find((x) => x.id === o.wallId);
       const mark = marks.byId.get(o.id);
-      if (w && mark) out.push(...openingMarkPrims(o, w, mark, N, c));
+      return w && mark ? [{ o, w, mark, id: o.id, p: openingMarkPos(o, w, N, c), dir: wallDir(w) }] : [];
+    });
+    const placed = layoutMarks(list, N);
+    for (const m of list) {
+      const at = placed.get(m.id) ?? m.p;
+      out.push(...openingMarkPrims(m.o, m.w, m.mark, N, c, at));
+      busy.push(markBox(at, N));
     }
   }
+  const labelAt = layoutRoomLabels(level.rooms, N, busy);
+  for (const r of level.rooms) out.push(...roomLabelPrims(r, N, labelAt.get(r.id)));
   for (const dm of level.dims) out.push(...dimEntityPrims(dm, N));
   return { prims: out, legend: [...legend.values()], schedule };
 }
@@ -231,16 +261,29 @@ export function buildSheet(p: Project, spec: SheetSpec, lang: Lang = 'uk', sheet
     return planContent(p, level, spec.kind, N, lang);
   };
 
-  // подбор масштаба: содержимое строится при пробном N, габариты почти не зависят от N
+  // «Авто»: наибольший стандартный масштаб, при котором содержимое помещается на лист. Для планов —
+  // 1:50, 1:75, 1:100 (крупнее 1:50 планы не чертят), далее — мельче, если здание большое. Размеры и марки
+  // заданы в мм бумаги, поэтому габарит зависит от масштаба — содержимое строится для каждого кандидата.
   let N = spec.scale > 0 ? spec.scale : 100;
   let content = build(N);
   if (spec.scale <= 0) {
-    const bb = primsBBox(content.prims);
-    const cw = bb.maxX - bb.minX;
-    const chh = bb.maxY - bb.minY;
-    const legendW = content.legend.length || content.schedule?.length ? 62 : 0;
-    N = SCALES.find((s) => cw / s <= area.w - legendW - 16 && chh / s <= area.h - 16) ?? 1000;
-    content = build(N);
+    const fits = (c: Content, s: number) => {
+      if (!c.prims.length) return true;
+      const bb = primsBBox(c.prims);
+      const legendW = c.legend.length || c.schedule?.length ? 62 : 0;
+      return (bb.maxX - bb.minX) / s <= area.w - legendW - 16 && (bb.maxY - bb.minY) / s <= area.h - 16;
+    };
+    const candidates = autoScales(spec.kind);
+    N = candidates[candidates.length - 1];
+    for (const s of candidates) {
+      const c = build(s);
+      if (fits(c, s)) {
+        N = s;
+        content = c;
+        break;
+      }
+    }
+    if (content === undefined || N === candidates[candidates.length - 1]) content = build(N);
   }
   if (spec.kind === 'elevations') {
     const room = level.rooms.find((r) => r.id === spec.roomId) ?? level.rooms[0];

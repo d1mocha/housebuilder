@@ -3,6 +3,7 @@ import { Fragment, useEffect, useState } from 'react';
 import { cableAmpacity, networkSummary } from '../calc/networks';
 import { FINISH_TYPE_NAMES } from '../catalog/finishes';
 import { fmt, useT } from '../i18n';
+import { orphanItems } from '../model/checks';
 import { createDemoProject } from '../model/demo';
 import { createProject } from '../model/defaults';
 import { newId } from '../model/ids';
@@ -17,12 +18,16 @@ import { MaterialsDialog } from './MaterialsDialog';
 import { NumInput } from './fields';
 import { useIssues } from './SidePanels';
 
-export function openProject(p: Project) {
+/**
+ * Открыть проект. saved — проект взят из хранилища или файла (а не создан сейчас): тогда проверяется,
+ * нет ли объектов вне помещений и участка, и предлагается их убрать.
+ */
+export function openProject(p: Project, opts: { saved?: boolean } = {}) {
   useProject.getState().setProject(p);
   const ui = useUi.getState();
   ui.setActiveLevel(useProject.getState().project.levels[0].id);
   ui.setLastProject(p.id);
-  ui.set({ selection: null, multi: [], tool: 'select', toolKind: null, dialog: null, mode: 'plan' });
+  ui.set({ selection: null, multi: [], tool: 'select', toolKind: null, dialog: null, mode: 'plan', orphanPrompt: !!opts.saved && orphanItems(useProject.getState().project).length > 0 });
 }
 
 function NewProjectDialog({ onClose }: { onClose: () => void }) {
@@ -89,7 +94,7 @@ function ProjectsDialog({ onClose }: { onClose: () => void }) {
               className="primary"
               onClick={async () => {
                 const full = await loadProject(p.id);
-                if (full) openProject(full);
+                if (full) openProject(full, { saved: true });
               }}
             >
               {t('Відкрити', 'Открыть')}

@@ -5,6 +5,7 @@ import { WET_ROOMS } from '../catalog/finishes';
 import { itemDef, num, routeDef, str } from '../catalog/registry';
 import { itemSize } from '../draw2d/plan';
 import { add, circlePolygon, closestOnSegment, cross, dist, distToPolygonEdge, eq, norm, pointInPolygon, polygonDistance, rectCorners, rotate, segmentIntersection, sub } from '../model/geometry';
+import { itemsInWalls, openingsOutOfWall } from '../model/checks';
 import type { Item, Level, LS, Project, Room, Sel, Vec2 } from '../model/types';
 import { detectRooms, geomOf, wallDir, wallLen } from '../model/walls';
 import { ruleValue } from './index';
@@ -19,6 +20,8 @@ export interface Issue {
   sel?: Sel;
   point?: Vec2;
   levelId?: string;
+  /** Дополнительные сведения проверки (например, id стены). */
+  data?: Record<string, string>;
 }
 
 const L = (uk: string, ru: string): LS => ({ uk, ru });
@@ -75,6 +78,19 @@ export function validateProject(p: Project): Issue[] {
 
   for (const lvl of p.levels) {
     const scope = lvl.id;
+    // ── Геометрия: мебель в стене, проёмы за пределами стены (например, после сдвига стен) ──
+    for (const { item, wallId } of itemsInWalls(lvl)) {
+      const def = itemDef(item.kind);
+      const cab = item.kind === 'cabinet' ? p.cabinets.find((c) => c.id === item.params.designId)?.name : undefined;
+      const nm = { uk: item.name ?? cab ?? def?.name.uk ?? item.kind, ru: item.name ?? cab ?? def?.name.ru ?? item.kind };
+      push('geom.item.inWall', 'warn', L(`${nm.uk}: об’єкт перетинається зі стіною — пересуньте його або стіну`, `${nm.ru}: объект пересекается со стеной — передвиньте его или стену`), { sel: { type: 'item', id: item.id, scope }, point: { x: item.x, y: item.y }, levelId: scope, data: { wallId } });
+    }
+    for (const o of openingsOutOfWall(lvl)) {
+      const w = lvl.walls.find((x) => x.id === o.wallId);
+      const kind = o.kind === 'window' ? L('Вікно', 'Окно') : o.kind === 'door' ? L('Двері', 'Дверь') : L('Проріз', 'Проём');
+      const at = w ? add(w.a, { x: wallDir(w).x * o.pos, y: wallDir(w).y * o.pos }) : undefined;
+      push('geom.opening.outOfWall', 'warn', L(`${kind.uk} ${o.width} мм виходить за межі стіни — пересуньте проріз або стіну`, `${kind.ru} ${o.width} мм выходит за пределы стены — передвиньте проём или стену`), { sel: { type: 'opening', id: o.id, scope }, point: at, levelId: scope });
+    }
     // ── Планировка ──
     const minH = rv('room.ceiling.minHeight', 2500);
     if (lvl.rooms.length && lvl.height < minH) push('room.ceiling.minHeight', 'warn', L(`${lvl.name}: висота стелі ${m(lvl.height)} м менша за ${m(minH)} м`, `${lvl.name}: высота потолка ${m(lvl.height)} м меньше ${m(minH)} м`), { levelId: scope });

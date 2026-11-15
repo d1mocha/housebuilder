@@ -80,7 +80,8 @@ const fs = require('fs');
     return { pos, room: room.name, cos: len > 400 ? (fwd.x * to.x + fwd.y * to.y) / len : 1, near: Math.round(near), eye: cam.y };
   });
   check('0.5 прогулка стартует в свободной зоне самой большой комнаты', walk.room === 'Вітальня' && walk.near > 0 && Math.abs(walk.eye - 1.6) < 0.01, JSON.stringify(walk));
-  check('0.5 прогулка: взгляд к центру комнаты', walk.cos > 0.98, walk.cos.toFixed(3));
+  // с итерации 3 взгляд выбирается по свободному полю зрения (1,5 м без объектов), а не строго к центру комнаты
+  // точные условия старта (радиус 0,6 м, поле зрения 1,5 м) проверяются в tests/iter3.test.ts и e2e/iter3.cjs
   await page.screenshot({ path: path.join(out, '52-walk-start.png') });
   await page.keyboard.press('KeyF');
 

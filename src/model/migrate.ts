@@ -1,6 +1,8 @@
 import { defaultCabinetCatalog } from '../cabinet/catalog';
+import { finishInUse, isEmptyShopDraft } from '../calc/materials';
 import { defaultFinishes } from '../catalog/finishes';
 import { SCHEMA_VERSION, defaultGroups } from './defaults';
+import { raiseHangingLamps } from './ops';
 import type { Project } from './types';
 
 /** Привести загруженный проект к текущей схеме, дозаполнив отсутствующие поля. */
@@ -52,6 +54,16 @@ export function migrateProject(raw: Project): Project {
       boards: [...p.cabinetCatalog.boards.map((b) => ({ ...b, textureId: b.textureId ?? boards.find((x) => x.id === b.id)?.textureId })), ...boards.filter((b) => !haveB.has(b.id))],
     };
   }
+  if (from < 4) {
+    // v4: подвесные светильники по умолчанию не ниже 2,1 м от пола
+    p.levels = p.levels.map((l) => {
+      const copy = { ...l, items: l.items.map((it) => ({ ...it })) };
+      raiseHangingLamps(copy);
+      return copy;
+    });
+  }
+  // пустые черновики «товара из магазина» (созданные и брошенные в старых версиях) не хранятся
+  p.finishes = p.finishes.filter((f) => !(isEmptyShopDraft(f) && !finishInUse(p, f.id)));
   p.models = p.models ?? [];
   p.electrical = p.electrical ?? { groups: defaultGroups() };
   p.baseline = p.baseline ?? null;
